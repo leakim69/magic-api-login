@@ -1,6 +1,6 @@
 # Magic API Login
 
-A WordPress/WooCommerce plugin that provides passwordless authentication via magic links with comprehensive API support.
+A WordPress/WooCommerce plugin that provides passwordless authentication via magic links with comprehensive API support and hardened security.
 
 ## Features
 
@@ -10,7 +10,12 @@ A WordPress/WooCommerce plugin that provides passwordless authentication via mag
 - 🔄 **Custom Redirects**: Redirect users to specific pages after login
 - 🔑 **Secure API Keys**: Generate and manage API keys for external integrations
 - ♻️ **Reusable Tokens**: Tokens can be used unlimited times until they expire
-- 🛡️ **IP Tracking**: Track IP addresses for security auditing
+- 🔒 **Hashed Tokens**: Tokens are hashed with HMAC-SHA256 at rest for maximum security
+- 🚦 **Rate Limiting**: 5 requests per minute per user to prevent abuse
+- 🛡️ **IP & User Agent Tracking**: Comprehensive logging for security auditing
+- 🗑️ **Auto-Purge**: Daily cleanup of expired tokens
+- 🚫 **Same-Host Redirects**: Prevents open redirect vulnerabilities
+- 👤 **User Revocation**: Users can revoke all their magic links from their profile
 
 ## Installation
 
@@ -125,26 +130,59 @@ curl -X POST https://yoursite.com/wp-json/magic-login/v1/generate-link \
   }'
 ```
 
-## Security Features
+## Security Features (v2.0 Hardened)
 
-- **Secure Token Generation**: Uses `random_bytes()` for cryptographically secure tokens
-- **Reusable Tokens**: Tokens can be used multiple times until expiration (perfect for sharing or bookmarking)
-- **Expiration Tracking**: Tokens expire after the configured time period (default: 30 days)
-- **API Key Authentication**: Secure API access with Bearer token authentication
-- **IP Address Logging**: Track IP addresses for security auditing
-- **WordPress Security Integration**: Uses WordPress nonces and sanitization functions
+### Token Security
+- **HMAC-SHA256 Hashing**: Tokens are hashed with `hash_hmac('sha256', $token, AUTH_SALT)` before storage
+- **Plaintext Never Stored**: Raw tokens only exist in transit and in responses
+- **Timing-Safe Comparisons**: Uses `hash_equals()` for constant-time validation
+- **Cryptographically Secure**: Uses `random_bytes()` for token generation
+
+### Access Control
+- **Rate Limiting**: 5 requests per minute per user prevents brute force and abuse
+- **API Key Authentication**: Secure Bearer token authentication with timing-safe checks
+- **Whitespace Rejection**: Auth headers are validated to reject empty/whitespace-only values
+- **Same-Host Redirects**: Only allows redirects to the same domain (prevents open redirects)
+
+### Monitoring & Auditing
+- **IP Address Logging**: Captures requester IP on token generation and use
+- **User Agent Tracking**: Stores User Agent strings (255 chars) for forensics
+- **Action Hooks**: Extensible with `sml_token_generated`, `sml_user_logged_in`, `sml_tokens_revoked` hooks
+- **IP Change Detection**: Fires `sml_ip_changed` action when login IP differs from generation IP
+
+### Data Hygiene
+- **Auto-Purge Cron**: Daily scheduled task removes expired tokens automatically
+- **User Revocation**: Users can revoke all their active tokens from profile page
+- **API Revocation**: REST endpoint for programmatic token revocation
+- **Manual Cleanup**: Deactivation removes scheduled cron jobs
+
+### Database Hardening
+- **Indexed Queries**: Optimized indexes on `user_id`, `expires_at`, and `token_hash`
+- **Proper Field Types**: Uses `BIGINT UNSIGNED` for IDs, `CHAR(64)` for hashes
+- **NOT NULL Constraints**: Required fields properly constrained
+
+### Session Management
+- **Session Cookies by Default**: No "remember me" unless explicitly needed
+- **Standard WordPress Auth**: Uses `wp_set_auth_cookie()` with WordPress best practices
+- **Validated Settings**: All admin settings sanitized with min/max bounds (1-365 days)
 
 ## Database
 
 The plugin creates a `{prefix}_magic_login_tokens` table with the following structure:
 
-- `id`: Auto-incrementing primary key
-- `user_id`: WordPress user ID
-- `token`: Unique 64-character token
-- `ip_address`: IP address of the requester
-- `created_at`: Token creation timestamp
-- `expires_at`: Token expiration timestamp
-- `used`: Boolean flag indicating if token has been used
+- `id`: BIGINT UNSIGNED - Auto-incrementing primary key
+- `user_id`: BIGINT(20) UNSIGNED - WordPress user ID (indexed)
+- `token_hash`: CHAR(64) - HMAC-SHA256 hash of token (unique, indexed)
+- `ip_address`: VARCHAR(45) - IP address where token was generated
+- `user_agent`: VARCHAR(255) - User agent string (for forensics)
+- `created_at`: DATETIME - Token creation timestamp (auto-filled)
+- `expires_at`: DATETIME - Token expiration timestamp (indexed)
+
+**Indexes:**
+- PRIMARY KEY on `id`
+- UNIQUE KEY on `token_hash`
+- KEY on `user_id` (for revocation queries)
+- KEY on `expires_at` (for purge queries)
 
 ## Requirements
 
@@ -162,18 +200,37 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 
 ## Version History
 
+### 2.0.0 - Security Hardened Edition 🔒
+**Major Security Overhaul**
+- 🔐 **Token Hashing**: Tokens now hashed with HMAC-SHA256 using AUTH_SALT before storage
+- 🚦 **Rate Limiting**: 5 requests per minute per user to prevent abuse
+- 🛡️ **User Agent Tracking**: Capture and store User Agent for forensic analysis
+- 🗑️ **Auto-Purge Cron**: Daily scheduled task removes expired tokens
+- 🚫 **Same-Host Redirects**: Tightened redirect validation to prevent open redirect attacks
+- 🔒 **Settings Sanitization**: All settings now properly validated with min/max bounds
+- 🍪 **Session Cookies**: Changed from persistent to session cookies by default
+- 👤 **User Revocation**: Users can revoke all their magic links from profile page
+- 📊 **Enhanced Logging**: IP change detection and comprehensive action hooks
+- ⚡ **Database Optimization**: Added indexes on user_id, expires_at, and token_hash
+- 🔧 **Hardened Auth**: Reject whitespace-only headers, timing-safe comparisons
+- 🎯 **API Revocation Endpoint**: New REST endpoint for programmatic token revocation
+
+**Breaking Changes:**
+- Database schema updated: `token` field renamed to `token_hash`
+- Added `user_agent` field to database
+- Changed field types for better performance and security
+- Existing installations will need to regenerate all tokens after upgrade
+
 ### 1.7.0
 - **Settings now use days instead of hours** for better UX
 - Admin setting changed from "Link Expiry (hours)" to "Link Expiry (days)"
 - API response changed from `expires_in_hours` to `expires_in_days`
 - Default remains 30 days, configurable up to 365 days
-- Internal calculations still precise (days converted to seconds)
 
 ### 1.6.0
 - **Changed tokens to be reusable** until expiration instead of single-use
 - Default expiration changed to 30 days instead of 24 hours
 - Tokens can now be used unlimited times within the expiry period
-- Perfect for sharing login links or bookmarking user dashboards
 
 ### 1.5.0
 - Initial public release
@@ -181,7 +238,6 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 - RESTful API with Bearer token authentication
 - Custom redirect support
 - Configurable link expiration
-- IP address tracking
 
 ## Author
 
