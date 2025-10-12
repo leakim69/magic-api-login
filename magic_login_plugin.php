@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Hardened Security Edition
- * Version: 2.0.0
+ * Version: 2.0.1
  * Author: Creative Chili
  */
 
@@ -88,10 +88,11 @@ class SimpleMagicLogin {
 
     public function api_permission_check() {
         $settings = get_option($this->option_key, []);
-        $api_key = isset($settings['api_key']) ? $settings['api_key'] : '';
+        $api_key = isset($settings['api_key']) ? trim($settings['api_key']) : '';
         
         if (empty($api_key)) {
-            return new WP_Error('api_disabled', 'API not enabled', ['status' => 403]);
+            error_log('Magic Login API: No API key configured');
+            return new WP_Error('api_disabled', 'API not enabled - please generate an API key in settings', ['status' => 403]);
         }
 
         // Support multiple header sources for proxy compatibility
@@ -104,6 +105,7 @@ class SimpleMagicLogin {
         
         // Reject empty or whitespace-only headers
         if (empty($auth_header) || ctype_space($auth_header)) {
+            error_log('Magic Login API: Missing Authorization header');
             return new WP_Error('missing_auth', 'Missing Authorization header', ['status' => 401]);
         }
 
@@ -113,8 +115,18 @@ class SimpleMagicLogin {
             $token = trim($m[1]);
         }
         
-        // Timing-safe comparison
+        // Additional cleanup - remove any hidden characters
+        $token = preg_replace('/[\x00-\x1F\x7F]/u', '', $token);
+        $api_key = preg_replace('/[\x00-\x1F\x7F]/u', '', $api_key);
+        
+        // Timing-safe comparison - ensure both are same length first
+        if (strlen($token) !== strlen($api_key)) {
+            error_log('Magic Login API: Key length mismatch - expected ' . strlen($api_key) . ' got ' . strlen($token));
+            return new WP_Error('invalid_auth', 'Invalid API key', ['status' => 401]);
+        }
+        
         if (!hash_equals($api_key, $token)) {
+            error_log('Magic Login API: Invalid API key attempt');
             return new WP_Error('invalid_auth', 'Invalid API key', ['status' => 401]);
         }
 
@@ -415,13 +427,16 @@ class SimpleMagicLogin {
         $output = [];
         
         // Validate expiry days (1-365)
-        $output['expiry_days'] = isset($input['expiry_days']) 
-            ? max(1, min(365, (int)$input['expiry_days'])) 
-            : 30;
+        if (isset($input['expiry_days'])) {
+            $output['expiry_days'] = max(1, min(365, (int)$input['expiry_days']));
+        } else {
+            $output['expiry_days'] = 30;
+        }
         
-        // API key should only be set via the generate button, not from POST
+        // CRITICAL: Always preserve the API key - it can only be changed via the Generate button
+        // Get the current settings to preserve the API key
         $existing = get_option($this->option_key, []);
-        if (isset($existing['api_key'])) {
+        if (isset($existing['api_key']) && !empty($existing['api_key'])) {
             $output['api_key'] = $existing['api_key'];
         }
         
@@ -485,18 +500,19 @@ class SimpleMagicLogin {
     }
 
     public function render_settings_page() {
+        // Handle API key generation FIRST before getting settings
+        if (isset($_POST['sml_generate_api_key']) && wp_verify_nonce($_POST['_wpnonce'], 'sml_generate_api_key')) {
+            $new_key = bin2hex(random_bytes(32));
+            $current_settings = get_option($this->option_key, []);
+            $current_settings['api_key'] = $new_key;
+            update_option($this->option_key, $current_settings);
+            echo '<div class="updated"><p>✓ New API key generated successfully</p></div>';
+        }
+        
+        // Now get fresh settings after potential update
         $settings = get_option($this->option_key, []);
         $expiry = isset($settings['expiry_days']) ? $settings['expiry_days'] : 30;
         $api_key = isset($settings['api_key']) ? $settings['api_key'] : '';
-        
-        // Generate new API key if requested
-        if (isset($_POST['sml_generate_api_key']) && wp_verify_nonce($_POST['_wpnonce'], 'sml_settings')) {
-            $new_key = bin2hex(random_bytes(32));
-            $settings['api_key'] = $new_key;
-            update_option($this->option_key, $settings);
-            $api_key = $new_key;
-            echo '<div class="updated"><p>✓ New API key generated</p></div>';
-        }
         
         $api_endpoint = rest_url('magic-login/v1/generate-link');
         ?>
@@ -531,11 +547,15 @@ class SimpleMagicLogin {
                     <th><label>API Key</label></th>
                     <td>
                         <?php if ($api_key): ?>
-                            <input type="text" readonly value="<?php echo esc_attr($api_key); ?>" id="sml-api-key" style="width: 100%; padding: 8px; font-family: monospace; background: #f5f5f5;">
-                            <button type="button" class="button button-small" onclick="navigator.clipboard.writeText(document.getElementById('sml-api-key').value); this.textContent='Copied!';" style="margin-top: 5px;">Copy to Clipboard</button>
-                            <p class="description">Keep this key secure. It provides full access to generate login links.</p>
+                            <input type="text" readonly value="<?php echo esc_attr($api_key); ?>" id="sml-api-key" style="width: 100%; padding: 8px; font-family: monospace; background: #f5f5f5; font-size: 12px;">
+                            <button type="button" class="button button-small" onclick="navigator.clipboard.writeText(document.getElementById('sml-api-key').value); this.textContent='✓ Copied!'; setTimeout(() => this.textContent='Copy to Clipboard', 2000);" style="margin-top: 5px;">Copy to Clipboard</button>
+                            <p class="description">
+                                <strong>Key Length:</strong> <?php echo strlen($api_key); ?> characters (should be 64)<br>
+                                Keep this key secure. It provides full access to generate login links.<br>
+                                <strong>Important:</strong> Copy the entire key including all characters. No spaces before or after.
+                            </p>
                         <?php else: ?>
-                            <p style="color: #666;">No API key generated yet</p>
+                            <p style="color: #666;">No API key generated yet. Click "Generate New API Key" below to create one.</p>
                         <?php endif; ?>
                     </td>
                 </tr>
@@ -548,12 +568,31 @@ class SimpleMagicLogin {
             </table>
 
             <form method="post">
-                <?php wp_nonce_field('sml_settings'); ?>
+                <?php wp_nonce_field('sml_generate_api_key'); ?>
                 <button type="submit" name="sml_generate_api_key" class="button button-secondary" 
                         onclick="return confirm('Generate a new API key? The old key will stop working immediately.');">
                     Generate New API Key
                 </button>
             </form>
+            
+            <hr>
+            <h2>Troubleshooting</h2>
+            <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 15px 0;">
+                <h3 style="margin-top: 0;">Getting "Invalid API Key" error in N8N?</h3>
+                <ol style="margin-left: 20px;">
+                    <li><strong>Verify key length:</strong> Should be exactly 64 characters (shown above)</li>
+                    <li><strong>Copy properly:</strong> Use the "Copy to Clipboard" button to avoid extra spaces</li>
+                    <li><strong>Check N8N header:</strong> Must be <code>Authorization: Bearer YOUR_KEY</code></li>
+                    <li><strong>Generate new key:</strong> If issues persist, generate a fresh key</li>
+                    <li><strong>Check logs:</strong> WordPress debug.log will show "Magic Login API:" messages</li>
+                    <li><strong>After generating:</strong> Wait 1-2 seconds before using the key</li>
+                </ol>
+                <p><strong>Testing:</strong> You can test the API with cURL:</p>
+                <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto; font-size: 11px;">curl -X POST "<?php echo esc_attr($api_endpoint); ?>" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com"}'</pre>
+            </div>
             
             <hr>
             <h2>Security Features (v2.0)</h2>

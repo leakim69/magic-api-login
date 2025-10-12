@@ -200,6 +200,20 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 
 ## Version History
 
+### 2.0.1 - Bug Fixes 🐛
+**Critical Fixes**
+- 🔧 **Fixed API Key Reverting**: API key generation now uses separate nonce and processes before settings load
+- 🔧 **Fixed N8N Authentication**: Added character cleanup and length validation to prevent auth failures
+- 📊 **Enhanced Debugging**: Added error logging for API auth failures (check debug.log)
+- 💡 **Better UX**: Shows API key length, improved copy button, added troubleshooting guide
+- 🛡️ **Hardened Validation**: Additional sanitization of API keys to remove hidden characters
+
+**Technical Details:**
+- Generate key handler now runs first and gets fresh settings
+- API permission check now strips control characters and validates length
+- Separate nonces for generate button vs settings form to prevent conflicts
+- Added comprehensive troubleshooting section in admin panel
+
 ### 2.0.0 - Security Hardened Edition 🔒
 **Major Security Overhaul**
 - 🔐 **Token Hashing**: Tokens now hashed with HMAC-SHA256 using AUTH_SALT before storage
