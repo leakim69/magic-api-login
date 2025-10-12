@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Magic API Login
- * Description: Passwordless authentication via magic links with API support
- * Version: 1.5.0
+ * Description: Passwordless authentication via reusable magic links with API support
+ * Version: 1.6.0
  * Author: Creative Chili
  */
 
@@ -120,7 +120,7 @@ class SimpleMagicLogin {
         global $wpdb;
         $token = bin2hex(random_bytes(32));
         $settings = get_option($this->option_key, []);
-        $expiry_hours = isset($settings['expiry_hours']) ? (int)$settings['expiry_hours'] : 24;
+        $expiry_hours = isset($settings['expiry_hours']) ? (int)$settings['expiry_hours'] : 720; // Default 30 days
         
         // Store redirect URL if provided
         $redirect_data = !empty($redirect_url) ? esc_url_raw($redirect_url) : '';
@@ -165,8 +165,9 @@ class SimpleMagicLogin {
         $token = sanitize_text_field($request->get_param('token'));
         
         global $wpdb;
+        // Check only expiration, not "used" status (tokens are reusable)
         $row = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$this->table} WHERE token = %s AND used = 0 AND expires_at > NOW()",
+            "SELECT * FROM {$this->table} WHERE token = %s AND expires_at > NOW()",
             $token
         ));
 
@@ -214,8 +215,9 @@ class SimpleMagicLogin {
         $token = sanitize_text_field($_GET['sml_token']);
         $user_id = (int)$_GET['sml_user'];
         
+        // Allow reusable tokens - only check expiration, not "used" status
         $row = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$table} WHERE token = %s AND user_id = %d AND used = 0 AND expires_at > NOW()",
+            "SELECT * FROM {$table} WHERE token = %s AND user_id = %d AND expires_at > NOW()",
             $token, $user_id
         ));
         
@@ -223,8 +225,7 @@ class SimpleMagicLogin {
             wp_die('Invalid or expired login link');
         }
 
-        // Mark as used
-        $wpdb->update($table, ['used' => 1], ['id' => $row->id]);
+        // No longer marking as used - link can be reused until expiration
         
         // Get user
         $user = get_user_by('ID', $user_id);
@@ -263,7 +264,7 @@ class SimpleMagicLogin {
 
     public function render_settings_page() {
         $settings = get_option($this->option_key, []);
-        $expiry = isset($settings['expiry_hours']) ? $settings['expiry_hours'] : 24;
+        $expiry = isset($settings['expiry_hours']) ? $settings['expiry_hours'] : 720; // Default 30 days
         $api_key = isset($settings['api_key']) ? $settings['api_key'] : '';
         
         // Generate new API key if requested

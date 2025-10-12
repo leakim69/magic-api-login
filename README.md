@@ -6,10 +6,10 @@ A WordPress/WooCommerce plugin that provides passwordless authentication via mag
 
 - 🔐 **Passwordless Authentication**: Generate secure magic login links for users
 - 🚀 **RESTful API**: Full API support for integration with external applications (N8N, Zapier, Make, etc.)
-- ⏱️ **Configurable Expiry**: Set custom expiration times for login links
+- ⏱️ **Configurable Expiry**: Set custom expiration times for login links (default: 30 days)
 - 🔄 **Custom Redirects**: Redirect users to specific pages after login
 - 🔑 **Secure API Keys**: Generate and manage API keys for external integrations
-- ✅ **Single-Use Tokens**: Tokens are marked as used after successful login
+- ♻️ **Reusable Tokens**: Tokens can be used unlimited times until they expire
 - 🛡️ **IP Tracking**: Track IP addresses for security auditing
 
 ## Installation
@@ -128,8 +128,8 @@ curl -X POST https://yoursite.com/wp-json/magic-login/v1/generate-link \
 ## Security Features
 
 - **Secure Token Generation**: Uses `random_bytes()` for cryptographically secure tokens
-- **Single-Use Tokens**: Tokens are automatically marked as used after successful login
-- **Expiration Tracking**: Tokens expire after the configured time period
+- **Reusable Tokens**: Tokens can be used multiple times until expiration (perfect for sharing or bookmarking)
+- **Expiration Tracking**: Tokens expire after the configured time period (default: 30 days)
 - **API Key Authentication**: Secure API access with Bearer token authentication
 - **IP Address Logging**: Track IP addresses for security auditing
 - **WordPress Security Integration**: Uses WordPress nonces and sanitization functions
@@ -162,6 +162,12 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 
 ## Version History
 
+### 1.6.0
+- **Changed tokens to be reusable** until expiration instead of single-use
+- Default expiration changed to 30 days (720 hours) instead of 24 hours
+- Tokens can now be used unlimited times within the expiry period
+- Perfect for sharing login links or bookmarking user dashboards
+
 ### 1.5.0
 - Initial public release
 - Magic link generation and verification
@@ -169,7 +175,6 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 - Custom redirect support
 - Configurable link expiration
 - IP address tracking
-- Single-use token security
 
 ## Author
 
