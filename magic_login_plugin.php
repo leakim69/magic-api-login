@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Hardened Security Edition
- * Version: 2.0.1
+ * Version: 2.0.2
  * Author: Creative Chili
  */
 
@@ -100,13 +100,24 @@ class SimpleMagicLogin {
             ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
             ?? ($_SERVER['HTTP_X_API_KEY'] ?? '');
         
+        // Fallback: some stacks (PHP-FPM, reverse proxies) only populate getallheaders()
+        if (empty($auth_header) && function_exists('getallheaders')) {
+            $headers = array_change_key_case(getallheaders(), CASE_LOWER);
+            if (isset($headers['authorization']) && !$auth_header) {
+                $auth_header = $headers['authorization'];
+            }
+            if (isset($headers['x-api-key']) && !$auth_header) {
+                $auth_header = $headers['x-api-key'];
+            }
+        }
+        
         // Normalize and trim
         $auth_header = trim($auth_header);
         
         // Reject empty or whitespace-only headers
         if (empty($auth_header) || ctype_space($auth_header)) {
-            error_log('Magic Login API: Missing Authorization header');
-            return new WP_Error('missing_auth', 'Missing Authorization header', ['status' => 401]);
+            error_log('Magic Login API: Missing Authorization header (tried $_SERVER and getallheaders)');
+            return new WP_Error('missing_auth', 'Missing Authorization header. Try using X-API-Key header if your proxy strips Authorization.', ['status' => 401]);
         }
 
         // Support both "Bearer TOKEN" and raw key format
@@ -578,20 +589,38 @@ class SimpleMagicLogin {
             <hr>
             <h2>Troubleshooting</h2>
             <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 15px 0;">
-                <h3 style="margin-top: 0;">Getting "Invalid API Key" error in N8N?</h3>
+                <h3 style="margin-top: 0;">Getting "Invalid API Key" or 401 error in N8N?</h3>
                 <ol style="margin-left: 20px;">
                     <li><strong>Verify key length:</strong> Should be exactly 64 characters (shown above)</li>
                     <li><strong>Copy properly:</strong> Use the "Copy to Clipboard" button to avoid extra spaces</li>
                     <li><strong>Check N8N header:</strong> Must be <code>Authorization: Bearer YOUR_KEY</code></li>
-                    <li><strong>Generate new key:</strong> If issues persist, generate a fresh key</li>
+                    <li><strong>Try X-API-Key instead:</strong> If your proxy strips Authorization headers, use <code>X-API-Key: YOUR_KEY</code> (no "Bearer")</li>
                     <li><strong>Check logs:</strong> WordPress debug.log will show "Magic Login API:" messages</li>
-                    <li><strong>After generating:</strong> Wait 1-2 seconds before using the key</li>
+                    <li><strong>Generate new key:</strong> If issues persist, generate a fresh key</li>
                 </ol>
-                <p><strong>Testing:</strong> You can test the API with cURL:</p>
-                <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto; font-size: 11px;">curl -X POST "<?php echo esc_attr($api_endpoint); ?>" \
+                
+                <h4>Testing with cURL (try both methods):</h4>
+                <p><strong>Method 1: Authorization header (standard)</strong></p>
+                <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto; font-size: 11px;">curl -i -X POST "<?php echo esc_attr($api_endpoint); ?>" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@example.com"}'</pre>
+
+                <p><strong>Method 2: X-API-Key header (for proxies that strip Authorization)</strong></p>
+                <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto; font-size: 11px;">curl -i -X POST "<?php echo esc_attr($api_endpoint); ?>" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com"}'</pre>
+  
+                <p><strong>If Method 1 fails but Method 2 works:</strong> Your server/proxy strips Authorization headers. Configure N8N to use <code>X-API-Key</code> header instead.</p>
+                
+                <h4>For Nginx/Proxy Users:</h4>
+                <p>If Authorization header is being stripped, add to your config:</p>
+                <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto; font-size: 11px;"># For FastCGI/PHP-FPM:
+fastcgi_param HTTP_AUTHORIZATION $http_authorization;
+
+# For reverse proxy:
+proxy_set_header Authorization $http_authorization;</pre>
             </div>
             
             <hr>
@@ -611,7 +640,7 @@ class SimpleMagicLogin {
             
             <h3>Generate Magic Login Link</h3>
             <p><strong>Endpoint:</strong> <code>POST <?php echo esc_attr($api_endpoint); ?></code></p>
-            <p><strong>Authentication:</strong> <code>Authorization: Bearer YOUR_API_KEY</code></p>
+            <p><strong>Authentication:</strong> <code>Authorization: Bearer YOUR_API_KEY</code> or <code>X-API-Key: YOUR_API_KEY</code></p>
             
             <h4>Request Parameters:</h4>
             <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto;">
@@ -636,11 +665,26 @@ class SimpleMagicLogin {
 
             <h3>N8N Example</h3>
             <p>Use an HTTP Request node with these settings:</p>
+            
+            <p><strong>Option 1: Authorization header (recommended)</strong></p>
             <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto;">
 Method: POST
 URL: <?php echo esc_attr($api_endpoint); ?>
 Headers:
   - Authorization: Bearer <?php echo $api_key ? 'YOUR_API_KEY' : '(generate key above)'; ?>
+  - Content-Type: application/json
+Body:
+  {
+    "email": "{{ $json.userEmail }}",
+    "redirect_url": "https://yoursite.com/dashboard"
+  }</pre>
+
+            <p><strong>Option 2: X-API-Key header (if proxy strips Authorization)</strong></p>
+            <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto;">
+Method: POST
+URL: <?php echo esc_attr($api_endpoint); ?>
+Headers:
+  - X-API-Key: <?php echo $api_key ? 'YOUR_API_KEY' : '(generate key above)'; ?>
   - Content-Type: application/json
 Body:
   {

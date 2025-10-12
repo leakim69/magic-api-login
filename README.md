@@ -38,10 +38,15 @@ Access the settings at **Settings > Magic API Login** in your WordPress admin pa
 
 **Endpoint:** `POST /wp-json/magic-login/v1/generate-link`
 
-**Authentication:** Include your API key in the request header:
+**Authentication:** Include your API key in the request header (choose one):
 ```
 Authorization: Bearer YOUR_API_KEY
 ```
+or
+```
+X-API-Key: YOUR_API_KEY
+```
+Note: Use `X-API-Key` if your proxy/server strips `Authorization` headers.
 
 **Request Body:**
 ```json
@@ -141,6 +146,8 @@ curl -X POST https://yoursite.com/wp-json/magic-login/v1/generate-link \
 ### Access Control
 - **Rate Limiting**: 5 requests per minute per user prevents brute force and abuse
 - **API Key Authentication**: Secure Bearer token authentication with timing-safe checks
+- **Flexible Header Support**: Accepts `Authorization: Bearer KEY` or `X-API-Key: KEY` formats
+- **Proxy Compatibility**: Falls back to `getallheaders()` for PHP-FPM/reverse proxy environments
 - **Whitespace Rejection**: Auth headers are validated to reject empty/whitespace-only values
 - **Same-Host Redirects**: Only allows redirects to the same domain (prevents open redirects)
 
@@ -199,6 +206,23 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 - **Password Reset Alternatives**: Provide passwordless login options
 
 ## Version History
+
+### 2.0.2 - Proxy Compatibility Fix 🔧
+**Major Compatibility Improvement**
+- 🔧 **Added getallheaders() Fallback**: Now works with PHP-FPM, reverse proxies, and all server configurations
+- 🔑 **X-API-Key Support**: Alternative header for environments that strip Authorization headers
+- 📚 **Enhanced Documentation**: Added dual cURL examples, Nginx config snippets, and troubleshooting guide
+- 💡 **Better Error Messages**: Now suggests X-API-Key when Authorization fails
+- 🔍 **Improved Logging**: Shows which header detection method was attempted
+
+**Technical Details:**
+- Checks `$_SERVER` variables first (fast path)
+- Falls back to `getallheads()` for PHP-FPM/FastCGI environments
+- Accepts both `Authorization: Bearer KEY` and `X-API-Key: KEY` formats
+- Case-insensitive header matching for maximum compatibility
+- This fixes the most common 401 errors in production environments
+
+**Nginx/Proxy Users:** See troubleshooting section for config snippets to forward Authorization headers.
 
 ### 2.0.1 - Bug Fixes 🐛
 **Critical Fixes**
