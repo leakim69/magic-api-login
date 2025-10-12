@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support
- * Version: 1.6.0
+ * Version: 1.7.0
  * Author: Creative Chili
  */
 
@@ -120,7 +120,8 @@ class SimpleMagicLogin {
         global $wpdb;
         $token = bin2hex(random_bytes(32));
         $settings = get_option($this->option_key, []);
-        $expiry_hours = isset($settings['expiry_hours']) ? (int)$settings['expiry_hours'] : 720; // Default 30 days
+        $expiry_days = isset($settings['expiry_days']) ? (int)$settings['expiry_days'] : 30; // Default 30 days
+        $expiry_seconds = $expiry_days * 24 * 3600; // Convert days to seconds
         
         // Store redirect URL if provided
         $redirect_data = !empty($redirect_url) ? esc_url_raw($redirect_url) : '';
@@ -129,7 +130,7 @@ class SimpleMagicLogin {
             'user_id' => $user->ID,
             'token' => $token,
             'ip_address' => $_SERVER['REMOTE_ADDR'] ?? 'API',
-            'expires_at' => gmdate('Y-m-d H:i:s', time() + ($expiry_hours * 3600))
+            'expires_at' => gmdate('Y-m-d H:i:s', time() + $expiry_seconds)
         ]);
 
         if (!$insert) {
@@ -155,8 +156,8 @@ class SimpleMagicLogin {
             'email' => $user->user_email,
             'token' => $token,
             'login_url' => $login_url,
-            'expires_in_hours' => $expiry_hours,
-            'expires_at' => gmdate('c', time() + ($expiry_hours * 3600)),
+            'expires_in_days' => $expiry_days,
+            'expires_at' => gmdate('c', time() + $expiry_seconds),
             'redirect_url' => $redirect_data ?: null
         ], 200);
     }
@@ -264,7 +265,7 @@ class SimpleMagicLogin {
 
     public function render_settings_page() {
         $settings = get_option($this->option_key, []);
-        $expiry = isset($settings['expiry_hours']) ? $settings['expiry_hours'] : 720; // Default 30 days
+        $expiry = isset($settings['expiry_days']) ? $settings['expiry_days'] : 30; // Default 30 days
         $api_key = isset($settings['api_key']) ? $settings['api_key'] : '';
         
         // Generate new API key if requested
@@ -284,10 +285,10 @@ class SimpleMagicLogin {
                 <?php settings_fields('sml_settings'); ?>
                 <table class="form-table">
                     <tr>
-                        <th><label for="sml_expiry">Link Expiry (hours)</label></th>
+                        <th><label for="sml_expiry">Link Expiry (days)</label></th>
                         <td>
-                            <input type="number" id="sml_expiry" name="<?php echo $this->option_key; ?>[expiry_hours]" value="<?php echo esc_attr($expiry); ?>" min="1" max="720">
-                            <p class="description">How long login links remain valid</p>
+                            <input type="number" id="sml_expiry" name="<?php echo $this->option_key; ?>[expiry_days]" value="<?php echo esc_attr($expiry); ?>" min="1" max="365">
+                            <p class="description">How many days a generated link remains valid (default: 30 days)</p>
                         </td>
                     </tr>
                 </table>
@@ -346,8 +347,8 @@ class SimpleMagicLogin {
   "email": "user@example.com",
   "token": "abc123...",
   "login_url": "https://yoursite.com/?sml_action=login&sml_token=abc123&sml_user=1&sml_redirect=...",
-  "expires_in_hours": 24,
-  "expires_at": "2025-10-12T10:30:00+00:00",
+  "expires_in_days": 30,
+  "expires_at": "2025-11-11T10:30:00+00:00",
   "redirect_url": "https://yoursite.com/some-page"
 }</pre>
 

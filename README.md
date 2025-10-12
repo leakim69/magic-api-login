@@ -55,8 +55,8 @@ Authorization: Bearer YOUR_API_KEY
   "email": "user@example.com",
   "token": "abc123...",
   "login_url": "https://yoursite.com/?sml_action=login&sml_token=abc123&sml_user=1&sml_redirect=...",
-  "expires_in_hours": 24,
-  "expires_at": "2025-10-12T10:30:00+00:00",
+  "expires_in_days": 30,
+  "expires_at": "2025-11-11T10:30:00+00:00",
   "redirect_url": "https://yoursite.com/dashboard"
 }
 ```
@@ -162,9 +162,16 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 
 ## Version History
 
+### 1.7.0
+- **Settings now use days instead of hours** for better UX
+- Admin setting changed from "Link Expiry (hours)" to "Link Expiry (days)"
+- API response changed from `expires_in_hours` to `expires_in_days`
+- Default remains 30 days, configurable up to 365 days
+- Internal calculations still precise (days converted to seconds)
+
 ### 1.6.0
 - **Changed tokens to be reusable** until expiration instead of single-use
-- Default expiration changed to 30 days (720 hours) instead of 24 hours
+- Default expiration changed to 30 days instead of 24 hours
 - Tokens can now be used unlimited times within the expiry period
 - Perfect for sharing login links or bookmarking user dashboards
 
