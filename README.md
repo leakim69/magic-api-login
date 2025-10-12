@@ -207,6 +207,29 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 
 ## Version History
 
+### 2.1.0 - Automatic Schema Migration & Stability 🔧
+**Critical Stability Fixes**
+- 🗄️ **Automatic Schema Migration**: Detects and upgrades old database schemas automatically
+- 🔧 **Fixes 500 "Failed to create token"**: Automatically adds missing `token_hash` and `user_agent` columns
+- 🔑 **Bulletproof API Key Generation**: Fixed nonce conflicts with unique field names
+- 📊 **Detailed Error Reporting**: Shows actual MySQL errors in logs and API responses for easier debugging
+- 🛡️ **Capability Checks**: Added `manage_options` check to API key generation
+- 🔍 **Migration Logging**: Logs all schema changes to debug.log with `[SML]` prefix
+
+**Technical Details:**
+- `ensure_schema()` runs on every `init` and before token generation
+- Detects missing columns (`token_hash`, `user_agent`, `created_at`) and adds them
+- Adds indexes (`user_idx`, `expires_idx`, `token_hash_idx`) if missing
+- Uses unique nonce field name `sml_generate_api_key_nonce` to prevent form conflicts
+- DB errors now include `details` field with actual MySQL message
+- Old installations will seamlessly migrate without data loss
+
+**Upgrade Notes:**
+- No manual migration needed - plugin auto-detects and upgrades schema
+- Existing tokens in old format will be ignored (generate new ones after upgrade)
+- Check debug.log for `[SML] Schema migration:` messages to confirm upgrade
+- Run `wp db query "SHOW COLUMNS FROM wp_magic_login_tokens;"` to verify schema
+
 ### 2.0.2 - Proxy Compatibility Fix 🔧
 **Major Compatibility Improvement**
 - 🔧 **Added getallheaders() Fallback**: Now works with PHP-FPM, reverse proxies, and all server configurations

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Hardened Security Edition
- * Version: 2.0.2
+ * Version: 2.1.0
  * Author: Creative Chili
  */
 
@@ -33,6 +33,9 @@ class SimpleMagicLogin {
         add_action('edit_user_profile', [$this, 'user_profile_revoke_section']);
         add_action('personal_options_update', [$this, 'handle_user_revoke']);
         add_action('edit_user_profile_update', [$this, 'handle_user_revoke']);
+        
+        // Ensure schema is up to date
+        $this->ensure_schema();
     }
 
     public function register_rest_routes() {
@@ -152,6 +155,53 @@ class SimpleMagicLogin {
         return hash_hmac('sha256', $token, AUTH_SALT);
     }
 
+    private function ensure_schema() {
+        global $wpdb;
+        $table = $this->table;
+
+        // Check if table exists
+        $exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s",
+            $table
+        ));
+        
+        if (!$exists) {
+            // Table doesn't exist, create it
+            $this->activate();
+            return;
+        }
+
+        // Migrate old columns to new schema
+        $columns = $wpdb->get_col("SHOW COLUMNS FROM {$table}", 0);
+        $altered = false;
+
+        if (!in_array('token_hash', $columns, true)) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN token_hash CHAR(64) NULL UNIQUE");
+            $altered = true;
+            error_log('[SML] Schema migration: Added token_hash column');
+        }
+        
+        if (!in_array('user_agent', $columns, true)) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN user_agent VARCHAR(255) NULL");
+            $altered = true;
+            error_log('[SML] Schema migration: Added user_agent column');
+        }
+        
+        if (!in_array('created_at', $columns, true)) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP");
+            $altered = true;
+            error_log('[SML] Schema migration: Added created_at column');
+        }
+
+        // Add helpful indexes if missing (suppress errors if they already exist)
+        if ($altered) {
+            $wpdb->query("ALTER TABLE {$table} ADD INDEX user_idx (user_id)");
+            $wpdb->query("ALTER TABLE {$table} ADD INDEX expires_idx (expires_at)");
+            $wpdb->query("ALTER TABLE {$table} ADD INDEX token_hash_idx (token_hash)");
+            error_log('[SML] Schema migration: Added indexes');
+        }
+    }
+
     private function check_rate_limit($user_id) {
         $key = 'sml_throttle_' . (int)$user_id;
         $limit = 5; // 5 requests
@@ -174,6 +224,9 @@ class SimpleMagicLogin {
     }
 
     public function api_generate_link(WP_REST_Request $request) {
+        // Ensure schema is current before inserting
+        $this->ensure_schema();
+        
         $user_id = $request->get_param('user_id');
         $email = $request->get_param('email');
         $redirect_url = $request->get_param('redirect_url');
@@ -225,7 +278,13 @@ class SimpleMagicLogin {
         ]);
 
         if (!$insert) {
-            return new WP_Error('db_error', 'Failed to create token', ['status' => 500]);
+            global $wpdb;
+            $db_error = $wpdb->last_error ?: 'unknown error';
+            error_log('[SML] DB insert failed: ' . $db_error);
+            return new WP_Error('db_error', 'Failed to create token', [
+                'status' => 500,
+                'details' => $db_error
+            ]);
         }
 
         // Log the generation
@@ -512,11 +571,17 @@ class SimpleMagicLogin {
 
     public function render_settings_page() {
         // Handle API key generation FIRST before getting settings
-        if (isset($_POST['sml_generate_api_key']) && wp_verify_nonce($_POST['_wpnonce'], 'sml_generate_api_key')) {
+        if (isset($_POST['sml_generate_api_key'])) {
+            if (!current_user_can('manage_options')) {
+                wp_die('Insufficient permissions');
+            }
+            if (!isset($_POST['sml_generate_api_key_nonce']) || !wp_verify_nonce($_POST['sml_generate_api_key_nonce'], 'sml_generate_api_key')) {
+                wp_die('Nonce verification failed');
+            }
             $new_key = bin2hex(random_bytes(32));
             $current_settings = get_option($this->option_key, []);
             $current_settings['api_key'] = $new_key;
-            update_option($this->option_key, $current_settings);
+            update_option($this->option_key, $current_settings, false);
             echo '<div class="updated"><p>✓ New API key generated successfully</p></div>';
         }
         
@@ -579,7 +644,7 @@ class SimpleMagicLogin {
             </table>
 
             <form method="post">
-                <?php wp_nonce_field('sml_generate_api_key'); ?>
+                <?php wp_nonce_field('sml_generate_api_key', 'sml_generate_api_key_nonce'); ?>
                 <button type="submit" name="sml_generate_api_key" class="button button-secondary" 
                         onclick="return confirm('Generate a new API key? The old key will stop working immediately.');">
                     Generate New API Key
