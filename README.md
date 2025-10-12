@@ -207,6 +207,28 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 
 ## Version History
 
+### 2.1.2 - Critical Migration Fix 🔧
+**Fixes Schema Migration Issue**
+- 🔧 **Fixed "Duplicate entry for key 'token'"**: Now properly drops old `token` column before adding `token_hash`
+- 🗄️ **Clean Migration**: Removes legacy v1.x columns to prevent conflicts
+- 📊 **Migration Logging**: Logs when old token column is dropped
+
+**The Issue:**
+- Old installations had a `token` column from v1.x with UNIQUE constraint
+- v2.1.0/2.1.1 added `token_hash` but didn't remove old `token` column
+- When inserting, MySQL tried to insert empty string into old `token` column
+- UNIQUE constraint failed: "Duplicate entry '' for key 'token'"
+
+**The Fix:**
+- Migration now checks for old `token` column and drops it before adding `token_hash`
+- Old tokens are invalidated (users will need to generate new ones)
+- Clean slate for v2.x schema
+
+**Upgrade Notes:**
+- Any existing magic links will be invalidated after upgrade
+- Generate new links after updating to v2.1.2
+- Check debug.log for `[SML] Schema migration: Dropped old token column` message
+
 ### 2.1.0 - Automatic Schema Migration & Stability 🔧
 **Critical Stability Fixes**
 - 🗄️ **Automatic Schema Migration**: Detects and upgrades old database schemas automatically

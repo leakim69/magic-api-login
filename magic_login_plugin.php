@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Hardened Security Edition
- * Version: 2.1.0
+ * Version: 2.1.2
  * Author: Creative Chili
  */
 
@@ -174,6 +174,13 @@ class SimpleMagicLogin {
         // Migrate old columns to new schema
         $columns = $wpdb->get_col("SHOW COLUMNS FROM {$table}", 0);
         $altered = false;
+
+        // Handle old 'token' column from v1.x - drop it if it exists
+        if (in_array('token', $columns, true)) {
+            $wpdb->query("ALTER TABLE {$table} DROP COLUMN token");
+            error_log('[SML] Schema migration: Dropped old token column');
+            $altered = true;
+        }
 
         if (!in_array('token_hash', $columns, true)) {
             $wpdb->query("ALTER TABLE {$table} ADD COLUMN token_hash CHAR(64) NULL UNIQUE");
