@@ -2,15 +2,19 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Hardened Security Edition
- * Version: 2.1.2
+ * Version: 2.2.0
  * Author: Creative Chili
  */
 
 if (!defined('ABSPATH')) exit;
 
 class SimpleMagicLogin {
+    private const SCHEMA_VERSION = 2;
+
     private $table;
     private $option_key = 'sml_settings';
+    private $schema_version_option = 'sml_schema_version';
+    private $schema_checked = false;
 
     public function __construct() {
         global $wpdb;
@@ -156,6 +160,16 @@ class SimpleMagicLogin {
     }
 
     private function ensure_schema() {
+        if ($this->schema_checked) {
+            return;
+        }
+        $this->schema_checked = true;
+
+        $current_version = (int) get_option($this->schema_version_option, 0);
+        if ($current_version >= self::SCHEMA_VERSION) {
+            return;
+        }
+
         global $wpdb;
         $table = $this->table;
 
@@ -207,6 +221,8 @@ class SimpleMagicLogin {
             $wpdb->query("ALTER TABLE {$table} ADD INDEX token_hash_idx (token_hash)");
             error_log('[SML] Schema migration: Added indexes');
         }
+
+        update_option($this->schema_version_option, self::SCHEMA_VERSION, false);
     }
 
     private function check_rate_limit($user_id) {
@@ -344,10 +360,9 @@ class SimpleMagicLogin {
 
         return new WP_REST_Response([
             'valid' => true,
-            'user_id' => $row->user_id,
-            'user_login' => $user->user_login,
-            'user_email' => $user->user_email,
-            'expires_at' => $row->expires_at
+            'user_id' => (int) $row->user_id,
+            'expires_at' => $row->expires_at,
+            'issued_at' => $row->created_at
         ], 200);
     }
 
@@ -395,6 +410,8 @@ class SimpleMagicLogin {
         if (!wp_next_scheduled('sml_purge_tokens')) {
             wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'sml_purge_tokens');
         }
+
+        update_option($this->schema_version_option, self::SCHEMA_VERSION, false);
     }
 
     public function deactivate() {

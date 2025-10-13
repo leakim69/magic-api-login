@@ -207,6 +207,12 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 
 ## Version History
 
+### 2.2.0 - Schema Cache & Privacy ✅
+**Performance & Security Enhancements**
+- ⚡ **Schema Caching**: Database migrations now run only when a version bump requires it, reducing load on high-traffic sites
+- 🛡️ **Privacy Hardening**: `/verify-token` endpoint no longer exposes usernames or emails for valid tokens
+- 🗓️ **Version Tracking**: Activation automatically records schema version to keep upgrades reliable
+
 ### 2.1.2 - Critical Migration Fix 🔧
 **Fixes Schema Migration Issue**
 - 🔧 **Fixed "Duplicate entry for key 'token'"**: Now properly drops old `token` column before adding `token_hash`
@@ -333,4 +339,3 @@ This plugin is provided as-is. Feel free to modify and use it for your projects.
 ## Support
 
 For issues, questions, or contributions, please visit the [GitHub repository](https://github.com/leakim69/magic-api-login).
-
