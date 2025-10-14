@@ -618,130 +618,340 @@ class SimpleMagicLogin {
         ?>
         <div class="wrap">
             <h1>Magic API Login Settings</h1>
-            
-            <div class="notice notice-info">
-                <p><strong>Security Hardened v2.0:</strong> Tokens are now hashed at rest, rate-limited, and auto-purged. Links remain reusable within expiry period.</p>
-            </div>
-            
-            <form method="post" action="options.php">
-                <?php settings_fields('sml_settings'); ?>
-                <table class="form-table">
-                    <tr>
-                        <th><label for="sml_expiry">Link Expiry (days)</label></th>
-                        <td>
-                            <input type="number" id="sml_expiry" name="<?php echo $this->option_key; ?>[expiry_days]" value="<?php echo esc_attr($expiry); ?>" min="1" max="365">
-                            <p class="description">How many days a generated link remains valid (default: 30 days, max: 365 days)</p>
-                        </td>
-                    </tr>
-                </table>
-                <?php submit_button(); ?>
-            </form>
 
-            <hr>
-            <h2>API Settings</h2>
-            <p>Use the API to generate magic login links from external applications like N8N.</p>
-            <p><strong>Rate Limit:</strong> 5 requests per minute per user</p>
-            
-            <table class="form-table">
-                <tr>
-                    <th><label>API Key</label></th>
-                    <td>
+            <style>
+                .sml-settings-page {
+                    max-width: 1100px;
+                    margin-top: 24px;
+                }
+
+                .sml-grid {
+                    display: grid;
+                    gap: 24px;
+                    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+                }
+
+                .sml-card {
+                    background: #ffffff;
+                    border-radius: 16px;
+                    padding: 24px;
+                    border: 1px solid #e2e8f0;
+                    box-shadow: 0 20px 45px rgba(15, 23, 42, 0.08);
+                }
+
+                .sml-card--full {
+                    grid-column: 1 / -1;
+                }
+
+                .sml-card--highlight {
+                    background: linear-gradient(135deg, #1e293b, #0f172a);
+                    color: #fff;
+                    border: none;
+                    box-shadow: 0 25px 50px rgba(15, 23, 42, 0.35);
+                }
+
+                .sml-card--highlight p {
+                    color: rgba(255, 255, 255, 0.85);
+                    margin: 0;
+                }
+
+                .sml-badge {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 8px;
+                    padding: 6px 14px;
+                    border-radius: 999px;
+                    background: rgba(255, 255, 255, 0.12);
+                    color: #fff;
+                    font-size: 12px;
+                    letter-spacing: 0.08em;
+                    text-transform: uppercase;
+                }
+
+                .sml-card-subtitle {
+                    margin-top: 6px;
+                    margin-bottom: 24px;
+                    color: #64748b;
+                }
+
+                .sml-stack {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 18px;
+                }
+
+                .sml-field label {
+                    display: block;
+                    font-weight: 600;
+                    margin-bottom: 6px;
+                    color: #1f2937;
+                }
+
+                .sml-field input[type="text"],
+                .sml-field input[type="number"] {
+                    width: 100%;
+                    padding: 10px 14px;
+                    border-radius: 12px;
+                    border: 1px solid #cbd5f5;
+                    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+                    background: #f8fafc;
+                    color: #0f172a;
+                }
+
+                .sml-field input[type="number"] {
+                    font-family: inherit;
+                }
+
+                .sml-field input:focus {
+                    border-color: #4f46e5;
+                    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+                    outline: none;
+                    background: #fff;
+                }
+
+                .sml-input-group {
+                    display: flex;
+                    gap: 10px;
+                }
+
+                .sml-input-group input {
+                    flex: 1;
+                }
+
+                .sml-copy {
+                    border-radius: 12px;
+                    padding: 0 16px;
+                    line-height: 34px;
+                    background: #0f172a;
+                    color: #fff;
+                    border: none;
+                }
+
+                .sml-copy:hover {
+                    background: #1e293b;
+                    color: #fff;
+                }
+
+                .sml-primary,
+                .sml-secondary {
+                    border-radius: 12px !important;
+                    padding: 0 24px !important;
+                    line-height: 42px !important;
+                }
+
+                .sml-meta {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 12px;
+                    align-items: center;
+                    color: #475569;
+                    font-size: 13px;
+                    margin-bottom: 18px;
+                }
+
+                .sml-pill {
+                    background: #e0e7ff;
+                    border-radius: 999px;
+                    padding: 6px 12px;
+                    font-weight: 600;
+                    color: #4338ca;
+                }
+
+                .sml-empty-state {
+                    background: #f8fafc;
+                    border-radius: 12px;
+                    padding: 16px;
+                    color: #475569;
+                    font-weight: 500;
+                }
+
+                .sml-inline-form {
+                    margin-top: 18px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 10px;
+                }
+
+                .sml-inline-form .description {
+                    margin: 0;
+                    color: #64748b;
+                }
+
+                .sml-card pre {
+                    background: #0f172a;
+                    color: #e2e8f0;
+                    border-radius: 14px;
+                    padding: 16px;
+                    font-size: 12px;
+                    line-height: 1.5;
+                    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.12);
+                    overflow-x: auto;
+                }
+
+                .sml-card code {
+                    background: rgba(15, 23, 42, 0.08);
+                    padding: 2px 6px;
+                    border-radius: 6px;
+                }
+
+                .sml-card ul,
+                .sml-list {
+                    color: #475569;
+                }
+
+                .sml-list {
+                    margin: 0;
+                    padding-left: 18px;
+                }
+
+                .sml-card h3 {
+                    margin-top: 28px;
+                    color: #0f172a;
+                }
+
+                .sml-card h4 {
+                    margin-top: 20px;
+                    color: #1f2937;
+                }
+
+                @media (max-width: 600px) {
+                    .sml-input-group {
+                        flex-direction: column;
+                    }
+
+                    .sml-card {
+                        padding: 20px;
+                    }
+
+                    .sml-primary,
+                    .sml-secondary {
+                        width: 100%;
+                        text-align: center;
+                    }
+                }
+            </style>
+
+            <div class="sml-settings-page">
+                <div class="sml-grid">
+                    <section class="sml-card sml-card--highlight sml-card--full">
+                        <span class="sml-badge">Security Hardened v2.0</span>
+                        <p>Tokens are hashed at rest, rate-limited, and automatically purged while links remain reusable throughout the expiry window.</p>
+                    </section>
+
+                    <section class="sml-card">
+                        <h2>Link Settings</h2>
+                        <p class="sml-card-subtitle">Control how long passwordless links stay valid for your users.</p>
+                        <form method="post" action="options.php" class="sml-stack">
+                            <?php settings_fields('sml_settings'); ?>
+                            <div class="sml-field">
+                                <label for="sml_expiry">Link Expiry (days)</label>
+                                <input type="number" id="sml_expiry" name="<?php echo $this->option_key; ?>[expiry_days]" value="<?php echo esc_attr($expiry); ?>" min="1" max="365">
+                                <p class="description">Default is 30 days. Choose anywhere between 1 and 365 days.</p>
+                            </div>
+                            <?php submit_button('Save Changes', 'primary', 'submit', false, ['class' => 'sml-primary']); ?>
+                        </form>
+                    </section>
+
+                    <section class="sml-card">
+                        <h2>API Access</h2>
+                        <p class="sml-card-subtitle">Generate magic login links from automations or external services.</p>
+                        <div class="sml-meta">
+                            <span class="sml-pill">Rate limit · 5 requests/minute per user</span>
+                        </div>
                         <?php if ($api_key): ?>
-                            <input type="text" readonly value="<?php echo esc_attr($api_key); ?>" id="sml-api-key" style="width: 100%; padding: 8px; font-family: monospace; background: #f5f5f5; font-size: 12px;">
-                            <button type="button" class="button button-small" onclick="navigator.clipboard.writeText(document.getElementById('sml-api-key').value); this.textContent='✓ Copied!'; setTimeout(() => this.textContent='Copy to Clipboard', 2000);" style="margin-top: 5px;">Copy to Clipboard</button>
-                            <p class="description">
-                                <strong>Key Length:</strong> <?php echo strlen($api_key); ?> characters (should be 64)<br>
-                                Keep this key secure. It provides full access to generate login links.<br>
-                                <strong>Important:</strong> Copy the entire key including all characters. No spaces before or after.
-                            </p>
+                            <div class="sml-field">
+                                <label for="sml-api-key">API Key</label>
+                                <div class="sml-input-group">
+                                    <input type="text" readonly value="<?php echo esc_attr($api_key); ?>" id="sml-api-key">
+                                    <button type="button" class="button sml-copy" onclick="navigator.clipboard.writeText(document.getElementById('sml-api-key').value); this.textContent='Copied'; setTimeout(() => this.textContent='Copy', 1800);">Copy</button>
+                                </div>
+                                <p class="description">Keep the 64-character key private—anyone with it can generate login links.</p>
+                            </div>
                         <?php else: ?>
-                            <p style="color: #666;">No API key generated yet. Click "Generate New API Key" below to create one.</p>
+                            <div class="sml-empty-state">
+                                <strong>No API key yet.</strong> Generate one below to enable external requests.
+                            </div>
                         <?php endif; ?>
-                    </td>
-                </tr>
-                <tr>
-                    <th><label>API Endpoint</label></th>
-                    <td>
-                        <input type="text" readonly value="<?php echo esc_attr($api_endpoint); ?>" style="width: 100%; padding: 8px; font-family: monospace; background: #f5f5f5;">
-                    </td>
-                </tr>
-            </table>
+                        <div class="sml-field">
+                            <label for="sml-api-endpoint">API Endpoint</label>
+                            <input type="text" readonly value="<?php echo esc_attr($api_endpoint); ?>" id="sml-api-endpoint">
+                        </div>
+                        <form method="post" class="sml-inline-form">
+                            <?php wp_nonce_field('sml_generate_api_key', 'sml_generate_api_key_nonce'); ?>
+                            <button type="submit" name="sml_generate_api_key" class="button button-secondary sml-secondary" onclick="return confirm('Generate a new API key? The old key will stop working immediately.');">
+                                Generate New API Key
+                            </button>
+                            <p class="description">Regenerating immediately revokes the previous key.</p>
+                        </form>
+                    </section>
 
-            <form method="post">
-                <?php wp_nonce_field('sml_generate_api_key', 'sml_generate_api_key_nonce'); ?>
-                <button type="submit" name="sml_generate_api_key" class="button button-secondary" 
-                        onclick="return confirm('Generate a new API key? The old key will stop working immediately.');">
-                    Generate New API Key
-                </button>
-            </form>
-            
-            <hr>
-            <h2>Troubleshooting</h2>
-            <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 15px 0;">
-                <h3 style="margin-top: 0;">Getting "Invalid API Key" or 401 error in N8N?</h3>
-                <ol style="margin-left: 20px;">
-                    <li><strong>Verify key length:</strong> Should be exactly 64 characters (shown above)</li>
-                    <li><strong>Copy properly:</strong> Use the "Copy to Clipboard" button to avoid extra spaces</li>
-                    <li><strong>Check N8N header:</strong> Must be <code>Authorization: Bearer YOUR_KEY</code></li>
-                    <li><strong>Try X-API-Key instead:</strong> If your proxy strips Authorization headers, use <code>X-API-Key: YOUR_KEY</code> (no "Bearer")</li>
-                    <li><strong>Check logs:</strong> WordPress debug.log will show "Magic Login API:" messages</li>
-                    <li><strong>Generate new key:</strong> If issues persist, generate a fresh key</li>
-                </ol>
-                
-                <h4>Testing with cURL (try both methods):</h4>
-                <p><strong>Method 1: Authorization header (standard)</strong></p>
-                <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto; font-size: 11px;">curl -i -X POST "<?php echo esc_attr($api_endpoint); ?>" \
+                    <section class="sml-card sml-card--full">
+                        <h2>Troubleshooting</h2>
+                        <p class="sml-card-subtitle">Quick checks when you encounter 401 responses or “Invalid API Key” errors.</p>
+                        <ol class="sml-list">
+                            <li><strong>Confirm the length:</strong> The key should contain exactly 64 characters.</li>
+                            <li><strong>Copy cleanly:</strong> Use the copy button to avoid hidden whitespace or trailing breaks.</li>
+                            <li><strong>Send the right header:</strong> Prefer <code>Authorization: Bearer YOUR_KEY</code>.</li>
+                            <li><strong>Fallback header:</strong> If proxies strip Authorization, send <code>X-API-Key: YOUR_KEY</code>.</li>
+                            <li><strong>Inspect logs:</strong> Look for “Magic Login API” entries in <code>debug.log</code>.</li>
+                            <li><strong>Rotate if unsure:</strong> Generate a new key and update your integrations.</li>
+                        </ol>
+
+                        <h3>Test with cURL</h3>
+                        <div class="sml-stack">
+                            <div>
+                                <h4>Authorization header</h4>
+                                <pre>curl -i -X POST "<?php echo esc_attr($api_endpoint); ?>" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@example.com"}'</pre>
-
-                <p><strong>Method 2: X-API-Key header (for proxies that strip Authorization)</strong></p>
-                <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto; font-size: 11px;">curl -i -X POST "<?php echo esc_attr($api_endpoint); ?>" \
+                            </div>
+                            <div>
+                                <h4>X-API-Key header</h4>
+                                <pre>curl -i -X POST "<?php echo esc_attr($api_endpoint); ?>" \
   -H "X-API-Key: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@example.com"}'</pre>
-  
-                <p><strong>If Method 1 fails but Method 2 works:</strong> Your server/proxy strips Authorization headers. Configure N8N to use <code>X-API-Key</code> header instead.</p>
-                
-                <h4>For Nginx/Proxy Users:</h4>
-                <p>If Authorization header is being stripped, add to your config:</p>
-                <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto; font-size: 11px;"># For FastCGI/PHP-FPM:
+                            </div>
+                        </div>
+
+                        <h4>Nginx / proxy tip</h4>
+                        <pre># FastCGI / PHP-FPM
 fastcgi_param HTTP_AUTHORIZATION $http_authorization;
 
-# For reverse proxy:
+# Reverse proxy
 proxy_set_header Authorization $http_authorization;</pre>
-            </div>
-            
-            <hr>
-            <h2>Security Features (v2.0)</h2>
-            <ul style="list-style: disc; margin-left: 20px;">
-                <li>✅ <strong>Hashed Tokens:</strong> Tokens are hashed with AUTH_SALT at rest for security</li>
-                <li>✅ <strong>Rate Limiting:</strong> 5 requests per minute per user prevents abuse</li>
-                <li>✅ <strong>IP & User Agent Logging:</strong> Track where tokens are generated and used</li>
-                <li>✅ <strong>Auto-Purge:</strong> Expired tokens automatically deleted daily</li>
-                <li>✅ <strong>Same-Host Redirects:</strong> Prevents open redirect vulnerabilities</li>
-                <li>✅ <strong>Session Cookies:</strong> Default to session cookies (not "remember me")</li>
-                <li>✅ <strong>User Revocation:</strong> Users can revoke all their links from their profile</li>
-            </ul>
-            
-            <hr>
-            <h2>API Documentation</h2>
-            
-            <h3>Generate Magic Login Link</h3>
-            <p><strong>Endpoint:</strong> <code>POST <?php echo esc_attr($api_endpoint); ?></code></p>
-            <p><strong>Authentication:</strong> <code>Authorization: Bearer YOUR_API_KEY</code> or <code>X-API-Key: YOUR_API_KEY</code></p>
-            
-            <h4>Request Parameters:</h4>
-            <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto;">
-{
-  "user_id": 1,                    // Optional: WordPress user ID
-  "email": "user@example.com",     // Optional: User email (use either user_id or email)
-  "redirect_url": "https://yoursite.com/some-page"  // Optional: URL to redirect after login
+                    </section>
+
+                    <section class="sml-card sml-card--full">
+                        <h2>Security Features (v2.0)</h2>
+                        <ul>
+                            <li>✅ <strong>Hashed tokens:</strong> Stored using <code>AUTH_SALT</code> for defense in depth.</li>
+                            <li>✅ <strong>Rate limiting:</strong> 5 requests per minute per user to stop brute-force attempts.</li>
+                            <li>✅ <strong>IP &amp; user-agent logging:</strong> Track when and where tokens are generated or redeemed.</li>
+                            <li>✅ <strong>Auto-purge:</strong> Expired tokens are cleaned up every day.</li>
+                            <li>✅ <strong>Same-host redirects:</strong> Blocks open redirect exploits.</li>
+                            <li>✅ <strong>Session cookies:</strong> Defaults to short-lived session authentication.</li>
+                            <li>✅ <strong>User revocation:</strong> Users can revoke links from their WordPress profile.</li>
+                        </ul>
+                    </section>
+
+                    <section class="sml-card sml-card--full">
+                        <h2>API Documentation</h2>
+
+                        <h3>Generate Magic Login Link</h3>
+                        <p><strong>Endpoint:</strong> <code>POST <?php echo esc_attr($api_endpoint); ?></code></p>
+                        <p><strong>Authentication:</strong> <code>Authorization: Bearer YOUR_API_KEY</code> or <code>X-API-Key: YOUR_API_KEY</code></p>
+
+                        <h4>Request</h4>
+                        <pre>{
+  "user_id": 1,
+  "email": "user@example.com",
+  "redirect_url": "https://yoursite.com/some-page"
 }</pre>
 
-            <h4>Response:</h4>
-            <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto;">
-{
+                        <h4>Response</h4>
+                        <pre>{
   "success": true,
   "user_id": 1,
   "email": "user@example.com",
@@ -752,41 +962,30 @@ proxy_set_header Authorization $http_authorization;</pre>
   "redirect_url": "https://yoursite.com/some-page"
 }</pre>
 
-            <h3>N8N Example</h3>
-            <p>Use an HTTP Request node with these settings:</p>
-            
-            <p><strong>Option 1: Authorization header (recommended)</strong></p>
-            <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto;">
-Method: POST
+                        <h3>N8N Example</h3>
+                        <p>Configure an HTTP Request node:</p>
+                        <pre>Method: POST
 URL: <?php echo esc_attr($api_endpoint); ?>
-Headers:
-  - Authorization: Bearer <?php echo $api_key ? 'YOUR_API_KEY' : '(generate key above)'; ?>
-  - Content-Type: application/json
-Body:
-  {
-    "email": "{{ $json.userEmail }}",
-    "redirect_url": "https://yoursite.com/dashboard"
-  }</pre>
 
-            <p><strong>Option 2: X-API-Key header (if proxy strips Authorization)</strong></p>
-            <pre style="background: #f5f5f5; padding: 10px; border-radius: 3px; overflow-x: auto;">
-Method: POST
-URL: <?php echo esc_attr($api_endpoint); ?>
 Headers:
-  - X-API-Key: <?php echo $api_key ? 'YOUR_API_KEY' : '(generate key above)'; ?>
-  - Content-Type: application/json
-Body:
-  {
-    "email": "{{ $json.userEmail }}",
-    "redirect_url": "https://yoursite.com/dashboard"
-  }</pre>
+  Authorization: Bearer <?php echo $api_key ? 'YOUR_API_KEY' : '(generate key above)'; ?>
+  Content-Type: application/json
 
-            <p><strong>Response in N8N:</strong></p>
-            <ul>
-                <li><code>{{ $json.login_url }}</code> - Full login URL (includes redirect)</li>
-                <li><code>{{ $json.token }}</code> - Just the token</li>
-                <li><code>{{ $json.expires_at }}</code> - When the link expires</li>
-            </ul>
+Body:
+{
+  "email": "{{ $json.userEmail }}",
+  "redirect_url": "https://yoursite.com/dashboard"
+}</pre>
+
+                        <p><strong>Response in N8N:</strong></p>
+                        <ul>
+                            <li><code>{{ $json.login_url }}</code> – Full login URL.</li>
+                            <li><code>{{ $json.token }}</code> – Token value.</li>
+                            <li><code>{{ $json.expires_at }}</code> – Expiry timestamp.</li>
+                        </ul>
+                    </section>
+                </div>
+            </div>
         </div>
         <?php
     }
