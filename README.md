@@ -207,6 +207,10 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 
 ## Version History
 
+### 2.3.0 - User Interface Improvement ✅
+**UI/UX**
+- ⚡ **User Interface**: Updated the Settings User Interface
+
 ### 2.2.0 - Schema Cache & Privacy ✅
 **Performance & Security Enhancements**
 - ⚡ **Schema Caching**: Database migrations now run only when a version bump requires it, reducing load on high-traffic sites

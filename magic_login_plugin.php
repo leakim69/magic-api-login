@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: Magic API Login
- * Description: Passwordless authentication via reusable magic links with API support - Hardened Security Edition
+ * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
  * Version: 2.3.0
  * Author: Creative Chili
  */
