@@ -6,10 +6,12 @@ A WordPress/WooCommerce plugin that provides passwordless authentication via mag
 
 - 🔐 **Passwordless Authentication**: Generate secure magic login links for users
 - 🚀 **RESTful API**: Full API support for integration with external applications (N8N, Zapier, Make, etc.)
-- ⏱️ **Configurable Expiry**: Set custom expiration times for login links (default: 30 days)
+- ⏱️ **Configurable Expiry**: Choose Minutes, Hour(s), or Day(s); default is 1 hour
+- 🔁 **Max Uses**: Limit how many times a link can be used (0 = unlimited)
 - 🔄 **Custom Redirects**: Redirect users to specific pages after login
+- ↩️ **Return URL**: Global fallback redirect used when no redirect is provided
 - 🔑 **Secure API Keys**: Generate and manage API keys for external integrations
-- ♻️ **Reusable Tokens**: Tokens can be used unlimited times until they expire
+- ♻️ **Reusable Tokens**: Tokens can be used until they expire or hit max uses
 - 🔒 **Hashed Tokens**: Tokens are hashed with HMAC-SHA256 at rest for maximum security
 - 🚦 **Rate Limiting**: 5 requests per minute per user to prevent abuse
 - 🛡️ **IP & User Agent Tracking**: Comprehensive logging for security auditing
@@ -29,7 +31,9 @@ A WordPress/WooCommerce plugin that provides passwordless authentication via mag
 
 Access the settings at **Settings > Magic API Login** in your WordPress admin panel:
 
-- **Link Expiry**: Set how long magic login links remain valid (default: 24 hours)
+- **Link Expiry**: Set how long magic login links remain valid (Minutes / Hours / Days; default: 1 Hour)
+- **Max Uses**: 0 for unlimited; otherwise the link becomes invalid after N uses
+- **Return URL**: Fallback URL after login when a generated link doesn’t include a redirect
 - **API Key**: Generate a secure API key for external integrations
 
 ## API Usage
@@ -51,13 +55,13 @@ Note: Use `X-API-Key` if your proxy/server strips `Authorization` headers.
 **Request Body:**
 ```json
 {
-  "user_id": 1,                           // Optional: WordPress user ID
-  "email": "user@example.com",            // Optional: User email (use either user_id or email)
-  "redirect_url": "https://yoursite.com/dashboard"  // Optional: URL to redirect after login
+  "user_id": 1,
+  "email": "user@example.com",
+  "redirect_url": "https://yoursite.com/dashboard"
 }
 ```
 
-**Response:**
+**Response (v2.5.0):**
 ```json
 {
   "success": true,
@@ -65,7 +69,8 @@ Note: Use `X-API-Key` if your proxy/server strips `Authorization` headers.
   "email": "user@example.com",
   "token": "abc123...",
   "login_url": "https://yoursite.com/?sml_action=login&sml_token=abc123&sml_user=1&sml_redirect=...",
-  "expires_in_days": 30,
+  "expires_in_seconds": 3600,
+  "max_uses": 0,
   "expires_at": "2025-11-11T10:30:00+00:00",
   "redirect_url": "https://yoursite.com/dashboard"
 }
@@ -89,9 +94,8 @@ Note: Use `X-API-Key` if your proxy/server strips `Authorization` headers.
 {
   "valid": true,
   "user_id": 1,
-  "user_login": "username",
-  "user_email": "user@example.com",
-  "expires_at": "2025-10-12 10:30:00"
+  "expires_at": "2025-10-12 10:30:00",
+  "issued_at": "2025-10-01 12:00:00"
 }
 ```
 
@@ -207,9 +211,18 @@ The plugin creates a `{prefix}_magic_login_tokens` table with the following stru
 
 ## Version History
 
+### 2.5.0 – Expiry Units, Max Uses, Return URL, UX
+- Expiry setting now supports Minutes/Hour(s)/Day(s). Default is 1 Hour
+- New Max Uses setting (0 = unlimited); usage enforced and tracked
+- New Return URL setting used when no redirect is provided
+- Styled error page for expired/overused links with a “Back to homepage” button
+- Confirmation moved to form submit for API key rotation
+- API response now includes `expires_in_seconds` and `max_uses`
+
 ### 2.3.0 - User Interface Improvement ✅
-**UI/UX**
-- ⚡ **User Interface**: Updated the Settings User Interface
+- Settings UI refreshed
+
+(See previous releases below for more details.)
 
 ### 2.2.0 - Schema Cache & Privacy ✅
 **Performance & Security Enhancements**
