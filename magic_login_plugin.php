@@ -2,14 +2,14 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.3.0
+ * Version: 2.5.0
  * Author: Creative Chili
  */
 
 if (!defined('ABSPATH')) exit;
 
 class SimpleMagicLogin {
-    private const SCHEMA_VERSION = 2;
+    private const SCHEMA_VERSION = 3;
 
     private $table;
     private $option_key = 'sml_settings';
@@ -214,6 +214,18 @@ class SimpleMagicLogin {
             error_log('[SML] Schema migration: Added created_at column');
         }
 
+        // v3: usage limits support
+        if (!in_array('use_count', $columns, true)) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN use_count INT NOT NULL DEFAULT 0");
+            $altered = true;
+            error_log('[SML] Schema migration: Added use_count column');
+        }
+        if (!in_array('max_uses', $columns, true)) {
+            $wpdb->query("ALTER TABLE {$table} ADD COLUMN max_uses INT NOT NULL DEFAULT 0");
+            $altered = true;
+            error_log('[SML] Schema migration: Added max_uses column');
+        }
+
         // Add helpful indexes if missing (suppress errors if they already exist)
         if ($altered) {
             $wpdb->query("ALTER TABLE {$table} ADD INDEX user_idx (user_id)");
@@ -281,8 +293,21 @@ class SimpleMagicLogin {
         $token_hash = $this->hash_token($token);
         
         $settings = get_option($this->option_key, []);
-        $expiry_days = isset($settings['expiry_days']) ? (int)$settings['expiry_days'] : 30;
-        $expiry_seconds = $expiry_days * 24 * 3600;
+        // Back-compat: convert legacy expiry_days to new value/unit if needed
+        $expiry_value = isset($settings['expiry_value']) ? (int)$settings['expiry_value'] : (isset($settings['expiry_days']) ? (int)$settings['expiry_days'] : 60);
+        $expiry_unit = isset($settings['expiry_unit']) ? $settings['expiry_unit'] : 'hours';
+        $expiry_value = max(1, $expiry_value);
+        switch (strtolower($expiry_unit)) {
+            case 'minutes':
+                $expiry_seconds = $expiry_value * 60;
+                break;
+            case 'hours':
+                $expiry_seconds = $expiry_value * 3600;
+                break;
+            default:
+                $expiry_seconds = $expiry_value * 24 * 3600; // days
+        }
+        $max_uses_setting = isset($settings['max_uses']) ? max(0, (int)$settings['max_uses']) : 0;
         
         // Capture IP and User Agent
         $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
@@ -297,7 +322,9 @@ class SimpleMagicLogin {
             'token_hash' => $token_hash,
             'ip_address' => $ip_address,
             'user_agent' => $user_agent,
-            'expires_at' => gmdate('Y-m-d H:i:s', time() + $expiry_seconds)
+            'expires_at' => gmdate('Y-m-d H:i:s', time() + $expiry_seconds),
+            'use_count' => 0,
+            'max_uses' => $max_uses_setting
         ]);
 
         if (!$insert) {
@@ -311,7 +338,9 @@ class SimpleMagicLogin {
         }
 
         // Log the generation
-        do_action('sml_token_generated', $user->ID, $expiry_days, $ip_address);
+        // For backward compatibility the action still passes days
+        $days_equivalent = max(1, (int) ceil($expiry_seconds / (24 * 3600)));
+        do_action('sml_token_generated', $user->ID, $days_equivalent, $ip_address);
 
         $login_url_params = [
             'sml_action' => 'login',
@@ -320,9 +349,13 @@ class SimpleMagicLogin {
         ];
         
         // Add redirect URL to query string if provided
-        if (!empty($redirect_url)) {
-            $login_url_params['sml_redirect'] = $redirect_url;
-        }
+		if (!empty($redirect_url)) {
+			$login_url_params['sml_redirect'] = $redirect_url;
+		} else {
+			// Fallback to configured Return URL
+			$return_url_setting = isset($settings['return_url']) && $settings['return_url'] !== '' ? $settings['return_url'] : home_url('/');
+			$login_url_params['sml_redirect'] = $return_url_setting;
+		}
         
         $login_url = add_query_arg($login_url_params, home_url('/'));
 
@@ -332,7 +365,8 @@ class SimpleMagicLogin {
             'email' => $user->user_email,
             'token' => $token, // Plaintext returned once
             'login_url' => $login_url,
-            'expires_in_days' => $expiry_days,
+            'expires_in_seconds' => $expiry_seconds,
+            'max_uses' => $max_uses_setting,
             'expires_at' => gmdate('c', time() + $expiry_seconds),
             'redirect_url' => $redirect_data ?: null
         ], 200);
@@ -397,6 +431,8 @@ class SimpleMagicLogin {
             user_agent VARCHAR(255),
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             expires_at DATETIME NOT NULL,
+            use_count INT NOT NULL DEFAULT 0,
+            max_uses INT NOT NULL DEFAULT 0,
             PRIMARY KEY (id),
             KEY user_idx (user_id),
             KEY expires_idx (expires_at),
@@ -443,6 +479,29 @@ class SimpleMagicLogin {
         return $validated;
     }
 
+	/**
+	 * Output a modern, branded error page for login link issues.
+	 */
+	private static function render_login_error_page($title, $message) {
+		header('Content-Type: text/html; charset=utf-8');
+		$home = esc_url(home_url('/'));
+		$title_esc = esc_html($title);
+		$message_esc = esc_html($message);
+		$site_name = esc_html(get_bloginfo('name'));
+		echo "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{$title_esc} – {$site_name}</title><style>
+			:root{--bg:#f8fafc;--card:#ffffff;--text:#0f172a;--muted:#475569;--primary:#4f46e5;--ring:rgba(99,102,241,.15)}
+			*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+			.container{min-height:100vh;display:grid;place-items:center;padding:32px}
+			.card{background:var(--card);max-width:720px;width:100%;border:1px solid #e2e8f0;border-radius:16px;padding:32px;box-shadow:0 20px 45px rgba(15,23,42,.08)}
+			.icon{width:56px;height:56px;border-radius:14px;display:grid;place-items:center;background:rgba(239,68,68,.08);color:#ef4444;margin-bottom:16px}
+			h1{font-size:22px;margin:0 0 8px}
+			p{margin:0 0 18px;color:var(--muted)}
+			.actions{margin-top:12px}
+			.btn{display:inline-block;background:var(--text);color:#fff;text-decoration:none;padding:10px 16px;border-radius:12px}
+			.btn:hover{background:#1e293b}
+		</style></head><body><div class=\"container\"><div class=\"card\"><div class=\"icon\" aria-hidden=\"true\">⚠️</div><h1>{$title_esc}</h1><p>{$message_esc}</p><div class=\"actions\"><a class=\"btn\" href=\"{$home}\">Back to homepage</a></div></div></div></body></html>";
+	}
+
     public static function verify_and_login() {
         if (empty($_GET['sml_action']) || $_GET['sml_action'] !== 'login') return;
         if (empty($_GET['sml_token']) || empty($_GET['sml_user'])) return;
@@ -459,15 +518,22 @@ class SimpleMagicLogin {
             $token_hash = hash_hmac('sha256', $token, AUTH_SALT);
         }
         
-        // Query with hashed token, reusable (no "used" check)
+        // Query with hashed token
         $row = $wpdb->get_row($wpdb->prepare(
-            "SELECT id, user_id, ip_address, user_agent, expires_at FROM {$table} 
+            "SELECT id, user_id, ip_address, user_agent, expires_at, use_count, max_uses FROM {$table} 
              WHERE token_hash = %s AND user_id = %d LIMIT 1",
             $token_hash, $user_id
         ));
         
         if (!$row || strtotime($row->expires_at) <= time()) {
-            wp_die('Invalid or expired login link');
+            self::render_login_error_page('Link expired', 'This magic login link has expired. Please request a new one.');
+            exit;
+        }
+
+        // Enforce usage limits
+        if ($row->max_uses > 0 && (int)$row->use_count >= (int)$row->max_uses) {
+            self::render_login_error_page('Link limit reached', 'This login link has reached its maximum allowed uses. Please request a new one.');
+            exit;
         }
 
         // Get user
@@ -490,10 +556,24 @@ class SimpleMagicLogin {
         wp_set_current_user($user_id);
         do_action('wp_login', $user->user_login, $user);
         do_action('sml_user_logged_in', $user_id, $current_ip, $current_ua);
+
+        // Increment use count after successful auth
+        $wpdb->update(
+            $table,
+            ['use_count' => (int)$row->use_count + 1],
+            ['id' => (int)$row->id],
+            ['%d'],
+            ['%d']
+        );
         
         // Safe redirect - no urldecode, same-host only
-        $raw_redirect = isset($_GET['sml_redirect']) ? $_GET['sml_redirect'] : '';
-        $redirect_url = SimpleMagicLogin::safe_redirect($raw_redirect);
+		// If no redirect specified in link, fall back to configured Return URL
+		$raw_redirect = isset($_GET['sml_redirect']) ? $_GET['sml_redirect'] : '';
+		if ($raw_redirect === '') {
+			$settings = get_option('sml_settings', []);
+			$raw_redirect = isset($settings['return_url']) && $settings['return_url'] !== '' ? $settings['return_url'] : home_url('/');
+		}
+		$redirect_url = SimpleMagicLogin::safe_redirect($raw_redirect);
         
         wp_safe_redirect($redirect_url);
         exit;
@@ -520,21 +600,66 @@ class SimpleMagicLogin {
     public function sanitize_settings($input) {
         $output = [];
         
-        // Validate expiry days (1-365)
-        if (isset($input['expiry_days'])) {
-            $output['expiry_days'] = max(1, min(365, (int)$input['expiry_days']));
-        } else {
-            $output['expiry_days'] = 30;
-        }
-        
-        // CRITICAL: Always preserve the API key - it can only be changed via the Generate button
-        // Get the current settings to preserve the API key
+        // Preserve or accept API key
         $existing = get_option($this->option_key, []);
-        if (isset($existing['api_key']) && !empty($existing['api_key'])) {
-            $output['api_key'] = $existing['api_key'];
+		if (isset($input['api_key']) && is_string($input['api_key'])) {
+			$candidate = trim($input['api_key']);
+			// Accept newly generated 64-char hex keys
+			if ($candidate !== '' && preg_match('/^[a-f0-9]{64}$/i', $candidate)) {
+				$output['api_key'] = strtolower($candidate);
+			} elseif (isset($existing['api_key']) && !empty($existing['api_key'])) {
+				// On invalid candidate, fall back to existing key if present
+				$output['api_key'] = $existing['api_key'];
+			}
+		} elseif (isset($existing['api_key']) && !empty($existing['api_key'])) {
+			// When no key provided in input (e.g., saving other settings), keep existing
+			$output['api_key'] = $existing['api_key'];
+		}
+		
+        // Return URL (default to home URL, preserve if missing)
+		$default_return = home_url('/');
+		if (isset($input['return_url'])) {
+			$raw = trim((string)$input['return_url']);
+			$sanitized = $raw !== '' ? esc_url_raw($raw) : '';
+			$output['return_url'] = $sanitized !== '' ? $sanitized : $default_return;
+		} elseif (isset($existing['return_url']) && $existing['return_url'] !== '') {
+			$output['return_url'] = $existing['return_url'];
+		} else {
+			$output['return_url'] = $default_return;
+		}
+        
+        // Expiry settings: value + unit (minutes | hours | days)
+        $allowed_units = ['minutes', 'hours', 'days'];
+        if (isset($input['expiry_value'])) {
+            $output['expiry_value'] = max(1, (int)$input['expiry_value']);
+        } elseif (isset($existing['expiry_value'])) {
+            $output['expiry_value'] = max(1, (int)$existing['expiry_value']);
+        } elseif (isset($existing['expiry_days'])) {
+            // Back-compat for older installs
+            $output['expiry_value'] = max(1, (int)$existing['expiry_days']);
+        } else {
+            $output['expiry_value'] = 1; // default 1 hour
         }
         
-        return $output;
+        if (isset($input['expiry_unit'])) {
+            $unit = strtolower((string)$input['expiry_unit']);
+            $output['expiry_unit'] = in_array($unit, $allowed_units, true) ? $unit : 'hours';
+        } elseif (isset($existing['expiry_unit']) && in_array(strtolower((string)$existing['expiry_unit']), $allowed_units, true)) {
+            $output['expiry_unit'] = strtolower((string)$existing['expiry_unit']);
+        } else {
+            $output['expiry_unit'] = 'hours';
+        }
+        
+        // Maximum uses: 0 for unlimited
+        if (isset($input['max_uses'])) {
+            $output['max_uses'] = max(0, (int)$input['max_uses']);
+        } elseif (isset($existing['max_uses'])) {
+            $output['max_uses'] = max(0, (int)$existing['max_uses']);
+        } else {
+            $output['max_uses'] = 0;
+        }
+		
+		return $output;
     }
 
     public function user_profile_revoke_section($user) {
@@ -611,8 +736,12 @@ class SimpleMagicLogin {
         
         // Now get fresh settings after potential update
         $settings = get_option($this->option_key, []);
-        $expiry = isset($settings['expiry_days']) ? $settings['expiry_days'] : 30;
-        $api_key = isset($settings['api_key']) ? $settings['api_key'] : '';
+        // Back-compat: compute display values
+        $expiry_value = isset($settings['expiry_value']) ? (int)$settings['expiry_value'] : (isset($settings['expiry_days']) ? (int)$settings['expiry_days'] : 1);
+        $expiry_unit = isset($settings['expiry_unit']) ? $settings['expiry_unit'] : 'hours';
+        $max_uses = isset($settings['max_uses']) ? (int)$settings['max_uses'] : 0;
+		$api_key = isset($settings['api_key']) ? $settings['api_key'] : '';
+		$return_url = isset($settings['return_url']) ? $settings['return_url'] : home_url('/');
         
         $api_endpoint = rest_url('magic-login/v1/generate-link');
         ?>
@@ -844,10 +973,28 @@ class SimpleMagicLogin {
                         <form method="post" action="options.php" class="sml-stack">
                             <?php settings_fields('sml_settings'); ?>
                             <div class="sml-field">
-                                <label for="sml_expiry">Link Expiry (days)</label>
-                                <input type="number" id="sml_expiry" name="<?php echo $this->option_key; ?>[expiry_days]" value="<?php echo esc_attr($expiry); ?>" min="1" max="365">
-                                <p class="description">Default is 30 days. Choose anywhere between 1 and 365 days.</p>
+                                <label for="sml_expiry_value">Link Expiry</label>
+                                <div class="sml-input-group">
+                                    <input type="number" id="sml_expiry_value" name="<?php echo $this->option_key; ?>[expiry_value]" value="<?php echo esc_attr($expiry_value); ?>" min="1">
+                                    <select id="sml_expiry_unit" name="<?php echo $this->option_key; ?>[expiry_unit]">
+                                        <?php $units = ['minutes' => 'Minutes', 'hours' => 'Hour(s)', 'days' => 'Day(s)'];
+                                        foreach ($units as $value => $label): ?>
+                                            <option value="<?php echo esc_attr($value); ?>" <?php selected($expiry_unit, $value); ?>><?php echo esc_html($label); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <p class="description">How long a generated link remains valid. Default: 1 Hour.</p>
                             </div>
+                            <div class="sml-field">
+                                <label for="sml_max_uses">Max Uses</label>
+                                <input type="number" id="sml_max_uses" name="<?php echo $this->option_key; ?>[max_uses]" value="<?php echo esc_attr($max_uses); ?>" min="0">
+                                <p class="description">How many times a generated link can be used. Use 0 for unlimited.</p>
+                            </div>
+							<div class="sml-field">
+								<label for="sml_return_url">Return URL</label>
+								<input type="text" id="sml_return_url" name="<?php echo $this->option_key; ?>[return_url]" value="<?php echo esc_attr($return_url); ?>">
+								<p class="description">Where to send the user after successful login. Default: <?php echo esc_html(home_url('/')); ?></p>
+							</div>
                             <?php submit_button('Save Changes', 'primary', 'submit', false, ['class' => 'sml-primary']); ?>
                         </form>
                     </section>
@@ -876,13 +1023,13 @@ class SimpleMagicLogin {
                             <label for="sml-api-endpoint">API Endpoint</label>
                             <input type="text" readonly value="<?php echo esc_attr($api_endpoint); ?>" id="sml-api-endpoint">
                         </div>
-                        <form method="post" class="sml-inline-form">
-                            <?php wp_nonce_field('sml_generate_api_key', 'sml_generate_api_key_nonce'); ?>
-                            <button type="submit" name="sml_generate_api_key" class="button button-secondary sml-secondary" onclick="return confirm('Generate a new API key? The old key will stop working immediately.');">
-                                Generate New API Key
-                            </button>
-                            <p class="description">Regenerating immediately revokes the previous key.</p>
-                        </form>
+						<form method="post" class="sml-inline-form" onsubmit="return confirm('Generate a new API key? The old key will stop working immediately.');">
+							<?php wp_nonce_field('sml_generate_api_key', 'sml_generate_api_key_nonce'); ?>
+							<button type="submit" name="sml_generate_api_key" class="button button-secondary sml-secondary">
+								Generate New API Key
+							</button>
+							<p class="description">Regenerating immediately revokes the previous key.</p>
+						</form>
                     </section>
 
                     <section class="sml-card sml-card--full">
@@ -901,14 +1048,14 @@ class SimpleMagicLogin {
                         <div class="sml-stack">
                             <div>
                                 <h4>Authorization header</h4>
-                                <pre>curl -i -X POST "<?php echo esc_attr($api_endpoint); ?>" \
+								<pre>curl -X POST "<?php echo esc_attr($api_endpoint); ?>" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@example.com"}'</pre>
                             </div>
                             <div>
                                 <h4>X-API-Key header</h4>
-                                <pre>curl -i -X POST "<?php echo esc_attr($api_endpoint); ?>" \
+								<pre>curl -X POST "<?php echo esc_attr($api_endpoint); ?>" \
   -H "X-API-Key: YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@example.com"}'</pre>
@@ -957,7 +1104,8 @@ proxy_set_header Authorization $http_authorization;</pre>
   "email": "user@example.com",
   "token": "abc123...",
   "login_url": "https://yoursite.com/?sml_action=login&sml_token=abc123&sml_user=1&sml_redirect=...",
-  "expires_in_days": 30,
+  "expires_in_seconds": 2592000,
+  "max_uses": 0,
   "expires_at": "2025-11-11T10:30:00+00:00",
   "redirect_url": "https://yoursite.com/some-page"
 }</pre>
