@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.5.0
+ * Version: 2.5.1
  * Author: Creative Chili
  */
 

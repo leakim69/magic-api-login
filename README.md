@@ -61,7 +61,7 @@ Note: Use `X-API-Key` if your proxy/server strips `Authorization` headers.
 }
 ```
 
-**Response (v2.5.0):**
+**Response (v2.5.1):**
 ```json
 {
   "success": true,
