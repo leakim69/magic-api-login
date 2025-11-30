@@ -2,9 +2,16 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.8.3
+ * Version: 2.9.0
  * Author: Creative Chili
  */
+
+// Ensure PHPMailer is available
+if (!class_exists('PHPMailer\PHPMailer\PHPMailer')) {
+    require_once ABSPATH . WPINC . '/PHPMailer/PHPMailer.php';
+    require_once ABSPATH . WPINC . '/PHPMailer/SMTP.php';
+    require_once ABSPATH . WPINC . '/PHPMailer/Exception.php';
+}
 
 if (!defined('ABSPATH')) exit;
 
@@ -205,6 +212,127 @@ class SimpleMagicLogin {
             return hash('sha256', $token . 'sml_fallback_salt_' . NONCE_SALT);
         }
         return hash_hmac('sha256', $token, AUTH_SALT);
+    }
+
+    /**
+     * Create HTML email template for login links
+     * Matches the design from spirithouse-register-cursor app
+     */
+    private function create_login_email_html($login_link, $expiry_display) {
+        $site_name = esc_html(get_bloginfo('name'));
+        $year = date('Y');
+        
+        return <<<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your Login Link</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f5;">
+  <table role="presentation" style="width: 100%; border-collapse: collapse; background-color: #f5f5f5;">
+    <tr>
+      <td style="padding: 40px 20px;">
+        <table role="presentation" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <tr>
+            <td style="padding: 40px 40px 30px; text-align: center; border-bottom: 1px solid #eeeeee;">
+              <h1 style="margin: 0; color: #333333; font-size: 28px; font-weight: 600;">Welcome Back!</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 40px;">
+              <p style="margin: 0 0 20px; color: #666666; font-size: 16px; line-height: 1.6;">
+                Click the button below to securely log in to your account:
+              </p>
+              <table role="presentation" style="width: 100%; margin: 30px 0;">
+                <tr>
+                  <td style="text-align: center;">
+                    <a href="{$login_link}" style="display: inline-block; padding: 14px 32px; background-color: #000000; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 16px; font-weight: 600;">
+                      Log In to Your Account
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin: 30px 0 0; color: #999999; font-size: 14px; line-height: 1.6;">
+                If the button doesn't work, copy and paste this link into your browser:<br>
+                <a href="{$login_link}" style="color: #000000; word-break: break-all;">{$login_link}</a>
+              </p>
+              <p style="margin: 30px 0 0; color: #999999; font-size: 12px; line-height: 1.6;">
+                This link is valid for {$expiry_display} and can be used multiple times. If you didn't request this login link, please ignore this email.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding: 30px 40px; background-color: #f9f9f9; border-top: 1px solid #eeeeee; text-align: center;">
+              <p style="margin: 0; color: #999999; font-size: 12px;">
+                © {$year} {$site_name}. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+HTML;
+    }
+
+    /**
+     * Send email via AWS SES SMTP using PHPMailer
+     * Falls back to wp_mail if SES is not configured
+     */
+    private function send_email($to, $subject, $html_body, $text_body = '') {
+        $settings = get_option($this->option_key, []);
+        
+        // Check if SES is configured
+        $ses_enabled = !empty($settings['ses_enabled']) && $settings['ses_enabled'] === '1';
+        $ses_host = $settings['ses_host'] ?? '';
+        $ses_port = $settings['ses_port'] ?? 465;
+        $ses_username = $settings['ses_username'] ?? '';
+        $ses_password = $settings['ses_password'] ?? '';
+        $ses_from_email = $settings['ses_from_email'] ?? '';
+        $ses_from_name = $settings['ses_from_name'] ?? get_bloginfo('name');
+        
+        if (!$ses_enabled || empty($ses_host) || empty($ses_username) || empty($ses_password) || empty($ses_from_email)) {
+            // Fall back to wp_mail
+            error_log('[SML] SES not configured, falling back to wp_mail');
+            $headers = ['Content-Type: text/html; charset=UTF-8'];
+            return wp_mail($to, $subject, $html_body, $headers);
+        }
+        
+        try {
+            $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
+            
+            // SMTP settings
+            $mail->isSMTP();
+            $mail->Host = $ses_host;
+            $mail->SMTPAuth = true;
+            $mail->Username = $ses_username;
+            $mail->Password = $ses_password;
+            $mail->SMTPSecure = \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS;
+            $mail->Port = (int) $ses_port;
+            
+            // Sender and recipient
+            $mail->setFrom($ses_from_email, $ses_from_name);
+            $mail->addAddress($to);
+            $mail->addReplyTo($ses_from_email);
+            
+            // Content
+            $mail->isHTML(true);
+            $mail->CharSet = 'UTF-8';
+            $mail->Subject = $subject;
+            $mail->Body = $html_body;
+            $mail->AltBody = $text_body ?: strip_tags(str_replace(['<br>', '<br/>', '<br />'], "\n", $html_body));
+            
+            $mail->send();
+            error_log('[SML] Email sent successfully via AWS SES to: ' . $to);
+            return true;
+        } catch (\PHPMailer\PHPMailer\Exception $e) {
+            error_log('[SML] AWS SES email failed: ' . $mail->ErrorInfo);
+            return false;
+        }
     }
 
     private function ensure_schema() {
@@ -620,8 +748,7 @@ class SimpleMagicLogin {
 
         // Send email
         $site_name = get_bloginfo('name');
-        $site_url = home_url('/');
-        $subject = sprintf(__('Your New Login Link for %s', 'magic-api-login'), $site_name);
+        $subject = sprintf(__('Your Login Link - %s', 'magic-api-login'), $site_name);
         
         $expiry_display = '';
         if ($expiry_unit === 'minutes') {
@@ -632,30 +759,20 @@ class SimpleMagicLogin {
             $expiry_display = $expiry_value . ' ' . ($expiry_value === 1 ? 'day' : 'days');
         }
         
-        $max_uses_display = $max_uses_setting > 0 ? sprintf(__('This link can be used up to %d time(s).', 'magic-api-login'), $max_uses_setting) : __('This link can be used multiple times.', 'magic-api-login');
+        // Create HTML email using the professional template
+        $html_body = $this->create_login_email_html($login_url, $expiry_display);
         
-        $message = sprintf(
-            __("Hello,\n\nYou requested a new login link for %s.\n\nClick the link below to log in:\n\n%s\n\nThis link will expire in %s. %s\n\nIf you didn't request this link, you can safely ignore this email.\n\nBest regards,\n%s", 'magic-api-login'),
-            $site_name,
+        // Plain text fallback
+        $text_body = sprintf(
+            "Welcome Back!\n\nClick the link below to securely log in to your account:\n\n%s\n\nThis link is valid for %s and can be used multiple times. If you didn't request this login link, please ignore this email.\n\n© %s %s. All rights reserved.",
             $login_url,
             $expiry_display,
-            $max_uses_display,
+            date('Y'),
             $site_name
         );
         
-        $headers = ['Content-Type: text/plain; charset=UTF-8'];
-        $sent = wp_mail($user->user_email, $subject, $message, $headers);
-        
-        if (!$sent) {
-            error_log('[SML] Failed to send email for new link request to: ' . $user->user_email);
-            // Log WordPress mail errors if available
-            global $phpmailer;
-            if (isset($phpmailer) && !empty($phpmailer->ErrorInfo)) {
-                error_log('[SML] Email error: ' . $phpmailer->ErrorInfo);
-            }
-        } else {
-            error_log('[SML] Email sent successfully to: ' . $user->user_email . ' - Link: ' . $login_url);
-        }
+        // Send using AWS SES or fallback to wp_mail
+        $sent = $this->send_email($user->user_email, $subject, $html_body, $text_body);
 
         do_action('sml_new_link_requested', $user->ID, $email, $sent);
 
@@ -1281,6 +1398,67 @@ class SimpleMagicLogin {
         } else {
             $output['max_uses'] = 0;
         }
+        
+        // AWS SES Settings
+        if (isset($input['ses_enabled'])) {
+            $output['ses_enabled'] = $input['ses_enabled'] === '1' ? '1' : '0';
+        } elseif (isset($existing['ses_enabled'])) {
+            $output['ses_enabled'] = $existing['ses_enabled'];
+        } else {
+            $output['ses_enabled'] = '0';
+        }
+        
+        if (isset($input['ses_host'])) {
+            $output['ses_host'] = sanitize_text_field($input['ses_host']);
+        } elseif (isset($existing['ses_host'])) {
+            $output['ses_host'] = $existing['ses_host'];
+        } else {
+            $output['ses_host'] = '';
+        }
+        
+        if (isset($input['ses_port'])) {
+            $output['ses_port'] = max(1, (int)$input['ses_port']);
+        } elseif (isset($existing['ses_port'])) {
+            $output['ses_port'] = (int)$existing['ses_port'];
+        } else {
+            $output['ses_port'] = 465;
+        }
+        
+        if (isset($input['ses_username'])) {
+            $output['ses_username'] = sanitize_text_field($input['ses_username']);
+        } elseif (isset($existing['ses_username'])) {
+            $output['ses_username'] = $existing['ses_username'];
+        } else {
+            $output['ses_username'] = '';
+        }
+        
+        if (isset($input['ses_password'])) {
+            // Only update password if not empty (allows keeping existing)
+            $pwd = $input['ses_password'];
+            if (!empty($pwd)) {
+                $output['ses_password'] = $pwd;
+            } elseif (isset($existing['ses_password'])) {
+                $output['ses_password'] = $existing['ses_password'];
+            }
+        } elseif (isset($existing['ses_password'])) {
+            $output['ses_password'] = $existing['ses_password'];
+        }
+        
+        if (isset($input['ses_from_email'])) {
+            $output['ses_from_email'] = sanitize_email($input['ses_from_email']);
+        } elseif (isset($existing['ses_from_email'])) {
+            $output['ses_from_email'] = $existing['ses_from_email'];
+        } else {
+            $output['ses_from_email'] = '';
+        }
+        
+        if (isset($input['ses_from_name'])) {
+            $output['ses_from_name'] = sanitize_text_field($input['ses_from_name']);
+        } elseif (isset($existing['ses_from_name'])) {
+            $output['ses_from_name'] = $existing['ses_from_name'];
+        } else {
+            $output['ses_from_name'] = get_bloginfo('name');
+        }
 		
 		return $output;
     }
@@ -1366,6 +1544,15 @@ class SimpleMagicLogin {
 		$api_key = isset($settings['api_key']) ? $settings['api_key'] : '';
 		$return_url = isset($settings['return_url']) ? $settings['return_url'] : home_url('/');
         
+        // AWS SES settings
+        $ses_enabled = isset($settings['ses_enabled']) ? $settings['ses_enabled'] : '0';
+        $ses_host = isset($settings['ses_host']) ? $settings['ses_host'] : '';
+        $ses_port = isset($settings['ses_port']) ? (int)$settings['ses_port'] : 465;
+        $ses_username = isset($settings['ses_username']) ? $settings['ses_username'] : '';
+        $ses_password = isset($settings['ses_password']) ? $settings['ses_password'] : '';
+        $ses_from_email = isset($settings['ses_from_email']) ? $settings['ses_from_email'] : '';
+        $ses_from_name = isset($settings['ses_from_name']) ? $settings['ses_from_name'] : get_bloginfo('name');
+        
         $api_endpoint = rest_url('magic-login/v1/generate-link');
         ?>
         <div class="wrap">
@@ -1440,7 +1627,9 @@ class SimpleMagicLogin {
                 }
 
                 .sml-field input[type="text"],
-                .sml-field input[type="number"] {
+                .sml-field input[type="number"],
+                .sml-field input[type="password"],
+                .sml-field input[type="email"] {
                     width: 100%;
                     padding: 10px 14px;
                     border-radius: 12px;
@@ -1653,6 +1842,52 @@ class SimpleMagicLogin {
 							</button>
 							<p class="description">Regenerating immediately revokes the previous key.</p>
 						</form>
+                    </section>
+
+                    <section class="sml-card sml-card--full">
+                        <h2>Email Settings (AWS SES)</h2>
+                        <p class="sml-card-subtitle">Configure AWS SES SMTP to send professional HTML emails. If not configured, the plugin uses WordPress default email.</p>
+                        <form method="post" action="options.php" class="sml-stack">
+                            <?php settings_fields('sml_settings'); ?>
+                            <div class="sml-field">
+                                <label>
+                                    <input type="checkbox" name="<?php echo $this->option_key; ?>[ses_enabled]" value="1" <?php checked($ses_enabled, '1'); ?>>
+                                    Enable AWS SES SMTP
+                                </label>
+                                <p class="description">When enabled, emails will be sent via AWS SES instead of WordPress default mail.</p>
+                            </div>
+                            <div class="sml-field">
+                                <label for="sml_ses_host">SMTP Host</label>
+                                <input type="text" id="sml_ses_host" name="<?php echo $this->option_key; ?>[ses_host]" value="<?php echo esc_attr($ses_host); ?>" placeholder="email-smtp.ap-southeast-1.amazonaws.com">
+                                <p class="description">AWS SES SMTP endpoint for your region.</p>
+                            </div>
+                            <div class="sml-field">
+                                <label for="sml_ses_port">SMTP Port</label>
+                                <input type="number" id="sml_ses_port" name="<?php echo $this->option_key; ?>[ses_port]" value="<?php echo esc_attr($ses_port); ?>" placeholder="465">
+                                <p class="description">Usually 465 (SSL) or 587 (TLS).</p>
+                            </div>
+                            <div class="sml-field">
+                                <label for="sml_ses_username">SMTP Username</label>
+                                <input type="text" id="sml_ses_username" name="<?php echo $this->option_key; ?>[ses_username]" value="<?php echo esc_attr($ses_username); ?>" placeholder="AKIAXXXXXXXX">
+                                <p class="description">Your AWS SES SMTP username (not your AWS access key).</p>
+                            </div>
+                            <div class="sml-field">
+                                <label for="sml_ses_password">SMTP Password</label>
+                                <input type="password" id="sml_ses_password" name="<?php echo $this->option_key; ?>[ses_password]" value="<?php echo esc_attr($ses_password); ?>" placeholder="<?php echo $ses_password ? '••••••••' : ''; ?>">
+                                <p class="description">Your AWS SES SMTP password. Leave blank to keep existing password.</p>
+                            </div>
+                            <div class="sml-field">
+                                <label for="sml_ses_from_email">From Email</label>
+                                <input type="email" id="sml_ses_from_email" name="<?php echo $this->option_key; ?>[ses_from_email]" value="<?php echo esc_attr($ses_from_email); ?>" placeholder="noreply@yourdomain.com">
+                                <p class="description">Must be a verified email address or domain in AWS SES.</p>
+                            </div>
+                            <div class="sml-field">
+                                <label for="sml_ses_from_name">From Name</label>
+                                <input type="text" id="sml_ses_from_name" name="<?php echo $this->option_key; ?>[ses_from_name]" value="<?php echo esc_attr($ses_from_name); ?>" placeholder="<?php echo esc_attr(get_bloginfo('name')); ?>">
+                                <p class="description">The name that appears in the "From" field.</p>
+                            </div>
+                            <?php submit_button('Save Email Settings', 'primary', 'submit', false, ['class' => 'sml-primary']); ?>
+                        </form>
                     </section>
 
                     <section class="sml-card sml-card--full">
