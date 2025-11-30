@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.8.0
+ * Version: 2.8.1
  * Author: Creative Chili
  */
 
@@ -472,7 +472,13 @@ class SimpleMagicLogin {
     public function api_request_new_link(WP_REST_Request $request) {
         // Verify nonce for CSRF protection
         $nonce = $request->get_header('X-WP-Nonce');
+        // Also check for nonce in request body (some setups need this)
+        if (empty($nonce)) {
+            $nonce = $request->get_param('_wpnonce');
+        }
+        
         if (!$nonce || !wp_verify_nonce($nonce, 'wp_rest')) {
+            error_log('[SML] Nonce verification failed. Nonce: ' . ($nonce ? 'present' : 'missing'));
             return new WP_REST_Response([
                 'success' => false,
                 'message' => 'Security check failed. Please refresh the page and try again.'
@@ -632,13 +638,21 @@ class SimpleMagicLogin {
         
         if (!$sent) {
             error_log('[SML] Failed to send email for new link request to: ' . $user->user_email);
+            // Log WordPress mail errors if available
+            global $phpmailer;
+            if (isset($phpmailer) && !empty($phpmailer->ErrorInfo)) {
+                error_log('[SML] Email error: ' . $phpmailer->ErrorInfo);
+            }
+        } else {
+            error_log('[SML] Email sent successfully to: ' . $user->user_email . ' - Link: ' . $login_url);
         }
 
         do_action('sml_new_link_requested', $user->ID, $email, $sent);
 
         return new WP_REST_Response([
             'success' => true,
-            'message' => 'A new login link has been sent to your email address.'
+            'message' => 'A new login link has been sent to your email address.',
+            'email_sent' => $sent
         ], 200);
     }
 
@@ -990,21 +1004,21 @@ class SimpleMagicLogin {
         
         ob_start();
         ?>
-        <div class="sml-login-form-container" style="max-width:480px;margin:0 auto;padding:24px;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 4px 6px rgba(0,0,0,0.1)">
+        <div class="sml-login-form-container" style="max-width:480px;margin:0 auto;padding:32px;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,0.08)">
             <?php if (!empty($atts['title'])): ?>
-                <h3 style="margin:0 0 12px;font-size:20px;color:#0f172a"><?php echo esc_html($atts['title']); ?></h3>
+                <h3 style="margin:0 0 8px;font-size:22px;font-weight:600;color:#0f172a;line-height:1.3"><?php echo esc_html($atts['title']); ?></h3>
             <?php endif; ?>
             <?php if (!empty($atts['description'])): ?>
-                <p style="margin:0 0 20px;color:#475569;font-size:14px"><?php echo esc_html($atts['description']); ?></p>
+                <p style="margin:0 0 24px;color:#64748b;font-size:15px;line-height:1.5"><?php echo esc_html($atts['description']); ?></p>
             <?php endif; ?>
-            <form class="sml-login-form" style="display:flex;flex-direction:column;gap:12px">
+            <form class="sml-login-form" style="display:flex;flex-direction:column;gap:16px">
                 <input 
                     type="email" 
                     name="email" 
                     class="sml-email-input" 
                     placeholder="<?php echo esc_attr($atts['placeholder']); ?>" 
                     required 
-                    style="width:100%;padding:12px 16px;border:1px solid #cbd5e1;border-radius:12px;font-size:15px;background:#fff;box-sizing:border-box"
+                    style="width:100%;padding:14px 16px;border:2px solid #e2e8f0;border-radius:12px;font-size:15px;background:#fff;box-sizing:border-box;transition:all 0.2s;font-family:inherit"
                 />
                 <?php if ($redirect): ?>
                     <input type="hidden" name="redirect_url" value="<?php echo esc_attr($redirect); ?>" />
@@ -1012,41 +1026,59 @@ class SimpleMagicLogin {
                 <button 
                     type="submit" 
                     class="sml-submit-btn" 
-                    style="background:#4f46e5;color:#fff;border:none;padding:12px 24px;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;transition:background 0.2s"
+                    style="width:100%;background:#4f46e5;color:#fff;border:none;padding:14px 24px;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 4px 6px rgba(79,70,229,0.25)"
                 >
                     <?php echo esc_html($atts['button_text']); ?>
                 </button>
             </form>
-            <div class="sml-form-message" style="margin-top:12px;padding:12px;border-radius:8px;display:none"></div>
+            <div class="sml-form-message" style="margin-top:16px;padding:14px 16px;border-radius:10px;display:none;font-size:14px;line-height:1.5"></div>
         </div>
         <style>
             .sml-login-form-container .sml-email-input:focus {
                 outline:none;
                 border-color:#4f46e5;
-                box-shadow:0 0 0 3px rgba(79,70,229,0.15);
+                box-shadow:0 0 0 4px rgba(79,70,229,0.1);
+                background:#fafafa;
             }
-            .sml-login-form-container .sml-submit-btn:hover {
+            .sml-login-form-container .sml-submit-btn:hover:not(:disabled) {
                 background:#4338ca;
+                box-shadow:0 6px 12px rgba(79,70,229,0.35);
+                transform:translateY(-1px);
+            }
+            .sml-login-form-container .sml-submit-btn:active:not(:disabled) {
+                transform:translateY(0);
+                box-shadow:0 2px 4px rgba(79,70,229,0.25);
             }
             .sml-login-form-container .sml-submit-btn:disabled {
-                opacity:0.6;
+                opacity:0.7;
                 cursor:not-allowed;
+                transform:none !important;
             }
         </style>
         <script>
         (function() {
-            var form = document.querySelector('.sml-login-form');
+            var container = document.querySelector('.sml-login-form-container');
+            if (!container) return;
+            
+            var form = container.querySelector('.sml-login-form');
             if (!form) return;
             
             var emailInput = form.querySelector('.sml-email-input');
             var submitBtn = form.querySelector('.sml-submit-btn');
-            var messageDiv = form.parentElement.querySelector('.sml-form-message');
+            var messageDiv = container.querySelector('.sml-form-message');
             var originalBtnText = submitBtn.textContent;
             
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
                 var email = emailInput.value.trim();
-                if (!email) return;
+                if (!email) {
+                    messageDiv.style.display = 'block';
+                    messageDiv.style.background = '#fef3c7';
+                    messageDiv.style.color = '#92400e';
+                    messageDiv.style.border = '1px solid #fbbf24';
+                    messageDiv.textContent = 'Please enter a valid email address.';
+                    return;
+                }
                 
                 submitBtn.disabled = true;
                 submitBtn.textContent = 'Sending...';
@@ -1066,9 +1098,15 @@ class SimpleMagicLogin {
                         'Content-Type': 'application/json',
                         'X-WP-Nonce': '<?php echo esc_js($nonce); ?>'
                     },
+                    credentials: 'same-origin',
                     body: JSON.stringify(formData)
                 })
-                .then(function(response) { return response.json(); })
+                .then(function(response) {
+                    if (!response.ok) {
+                        throw new Error('HTTP error! status: ' + response.status);
+                    }
+                    return response.json();
+                })
                 .then(function(data) {
                     submitBtn.disabled = false;
                     submitBtn.textContent = originalBtnText;
@@ -1088,13 +1126,14 @@ class SimpleMagicLogin {
                     }
                 })
                 .catch(function(error) {
+                    console.error('Magic Login Form Error:', error);
                     submitBtn.disabled = false;
                     submitBtn.textContent = originalBtnText;
                     messageDiv.style.display = 'block';
                     messageDiv.style.background = '#fee2e2';
                     messageDiv.style.color = '#991b1b';
                     messageDiv.style.border = '1px solid #fca5a5';
-                    messageDiv.textContent = 'An error occurred. Please try again later.';
+                    messageDiv.textContent = 'An error occurred. Please check your browser console for details or try again later.';
                 });
             });
         })();
