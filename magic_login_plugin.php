@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.9.0
+ * Version: 2.9.1
  * Author: Creative Chili
  */
 
@@ -45,6 +45,10 @@ class SimpleMagicLogin {
         
         // Shortcode for email login form
         add_shortcode('magic_login_form', [$this, 'render_login_form_shortcode']);
+        
+        // AJAX handlers for shortcode form (more reliable than REST API)
+        add_action('wp_ajax_sml_request_login_link', [$this, 'ajax_request_login_link']);
+        add_action('wp_ajax_nopriv_sml_request_login_link', [$this, 'ajax_request_login_link']);
         
         // User profile actions
         add_action('show_user_profile', [$this, 'user_profile_revoke_section']);
@@ -783,6 +787,155 @@ HTML;
         ], 200);
     }
 
+    /**
+     * AJAX handler for shortcode form - more reliable than REST API
+     */
+    public function ajax_request_login_link() {
+        // Verify nonce
+        if (!isset($_POST['nonce']) || !wp_verify_nonce($_POST['nonce'], 'sml_login_form_nonce')) {
+            wp_send_json_error(['message' => 'Security check failed. Please refresh the page.']);
+            return;
+        }
+        
+        $email = isset($_POST['email']) ? sanitize_email($_POST['email']) : '';
+        $redirect_url = isset($_POST['redirect_url']) ? esc_url_raw($_POST['redirect_url']) : '';
+        
+        if (empty($email) || !is_email($email)) {
+            wp_send_json_error(['message' => 'Please provide a valid email address.']);
+            return;
+        }
+        
+        // IP-based rate limiting
+        $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+        $ip_rate_key = 'sml_ip_rate_' . md5($ip);
+        $ip_limit = 10;
+        $ip_window = 300;
+        
+        $ip_data = get_transient($ip_rate_key);
+        if ($ip_data === false) {
+            $ip_data = ['count' => 0, 'time' => time()];
+        }
+        if (time() - $ip_data['time'] > $ip_window) {
+            $ip_data = ['count' => 0, 'time' => time()];
+        }
+        $ip_data['count']++;
+        set_transient($ip_rate_key, $ip_data, $ip_window);
+        
+        if ($ip_data['count'] > $ip_limit) {
+            wp_send_json_error(['message' => 'Too many requests. Please try again later.']);
+            return;
+        }
+        
+        // Get user
+        $user = get_user_by('email', $email);
+        
+        if (!$user) {
+            // Return success to prevent email enumeration
+            wp_send_json_success(['message' => 'If an account exists with this email, a login link has been sent.']);
+            return;
+        }
+        
+        // Email rate limiting
+        $rate_limit_key = 'sml_request_link_' . md5($email);
+        $limit = 3;
+        $window = 300;
+        
+        $data = get_transient($rate_limit_key);
+        if ($data === false) {
+            $data = ['count' => 0, 'time' => time()];
+        }
+        if (time() - $data['time'] > $window) {
+            $data = ['count' => 0, 'time' => time()];
+        }
+        $data['count']++;
+        set_transient($rate_limit_key, $data, $window);
+        
+        if ($data['count'] > $limit) {
+            wp_send_json_error(['message' => 'Too many requests. Please try again later.']);
+            return;
+        }
+        
+        // Generate token
+        global $wpdb;
+        $token = bin2hex(random_bytes(32));
+        $token_hash = $this->hash_token($token);
+        
+        $settings = get_option($this->option_key, []);
+        $expiry_value = isset($settings['expiry_value']) ? (int)$settings['expiry_value'] : 1;
+        $expiry_unit = isset($settings['expiry_unit']) ? $settings['expiry_unit'] : 'hours';
+        
+        switch (strtolower($expiry_unit)) {
+            case 'minutes': $expiry_seconds = $expiry_value * 60; break;
+            case 'hours': $expiry_seconds = $expiry_value * 3600; break;
+            default: $expiry_seconds = $expiry_value * 86400;
+        }
+        
+        $max_uses_setting = isset($settings['max_uses']) ? max(0, (int)$settings['max_uses']) : 0;
+        
+        // Get redirect URL
+        if (empty($redirect_url)) {
+            $redirect_url = isset($settings['return_url']) && $settings['return_url'] !== '' 
+                ? $settings['return_url'] 
+                : home_url('/');
+        }
+        
+        // Ensure schema
+        $this->ensure_schema();
+        
+        // Insert token
+        $insert = $wpdb->insert($this->table, [
+            'user_id' => $user->ID,
+            'token_hash' => $token_hash,
+            'ip_address' => $ip,
+            'user_agent' => isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 255) : '',
+            'expires_at' => gmdate('Y-m-d H:i:s', time() + $expiry_seconds),
+            'use_count' => 0,
+            'max_uses' => $max_uses_setting
+        ]);
+        
+        if (!$insert) {
+            error_log('[SML AJAX] Failed to create token: ' . $wpdb->last_error);
+            wp_send_json_error(['message' => 'An error occurred. Please try again.']);
+            return;
+        }
+        
+        // Build login URL
+        $login_url = add_query_arg([
+            'sml_action' => 'login',
+            'sml_token' => $token,
+            'sml_user' => $user->ID,
+            'sml_redirect' => $redirect_url
+        ], home_url('/'));
+        
+        // Expiry display
+        if ($expiry_unit === 'minutes') {
+            $expiry_display = $expiry_value . ' ' . ($expiry_value === 1 ? 'minute' : 'minutes');
+        } elseif ($expiry_unit === 'hours') {
+            $expiry_display = $expiry_value . ' ' . ($expiry_value === 1 ? 'hour' : 'hours');
+        } else {
+            $expiry_display = $expiry_value . ' ' . ($expiry_value === 1 ? 'day' : 'days');
+        }
+        
+        // Send email
+        $site_name = get_bloginfo('name');
+        $subject = sprintf('Your Login Link - %s', $site_name);
+        $html_body = $this->create_login_email_html($login_url, $expiry_display);
+        $text_body = sprintf(
+            "Welcome Back!\n\nClick the link below to log in:\n\n%s\n\nThis link is valid for %s.\n\n© %s %s",
+            $login_url, $expiry_display, date('Y'), $site_name
+        );
+        
+        $sent = $this->send_email($user->user_email, $subject, $html_body, $text_body);
+        
+        if ($sent) {
+            error_log('[SML AJAX] Email sent to: ' . $user->user_email);
+            wp_send_json_success(['message' => 'A login link has been sent to your email address.']);
+        } else {
+            error_log('[SML AJAX] Failed to send email to: ' . $user->user_email);
+            wp_send_json_error(['message' => 'Failed to send email. Please try again.']);
+        }
+    }
+
     public function activate() {
         global $wpdb;
         $charset = $wpdb->get_charset_collate();
@@ -1112,6 +1265,7 @@ HTML;
     /**
      * Render shortcode for magic login email form
      * Usage: [magic_login_form]
+     * Uses WordPress AJAX instead of REST API for better compatibility
      * 
      * @param array $atts Shortcode attributes
      * @return string HTML form
@@ -1119,201 +1273,175 @@ HTML;
     public function render_login_form_shortcode($atts = []) {
         $atts = shortcode_atts([
             'title' => 'Request Login Link',
-            'description' => 'Enter your email address and we\'ll send you a magic login link.',
+            'description' => 'Enter your email to receive a magic login link.',
             'button_text' => 'Send Login Link',
             'placeholder' => 'your@email.com',
             'redirect_url' => ''
         ], $atts, 'magic_login_form');
         
-        $rest_url = esc_url(rest_url('magic-login/v1/request-new-link'));
-        $nonce = wp_create_nonce('wp_rest');
+        // Use WordPress AJAX URL (more reliable than REST API)
+        $ajax_url = admin_url('admin-ajax.php');
+        $nonce = wp_create_nonce('sml_login_form_nonce');
         $redirect = !empty($atts['redirect_url']) ? esc_attr($atts['redirect_url']) : '';
+        
+        // Generate unique ID for multiple forms on same page
+        $form_id = 'sml-form-' . wp_rand(1000, 9999);
         
         ob_start();
         ?>
-        <div class="sml-login-form-container" style="max-width:480px;margin:0 auto;padding:32px;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,0.08)">
+        <div id="<?php echo esc_attr($form_id); ?>" class="sml-form-wrapper">
+            <style>
+                #<?php echo esc_attr($form_id); ?> {
+                    max-width: 420px;
+                    margin: 0 auto;
+                    padding: 28px;
+                    background: #fff;
+                    border-radius: 12px;
+                    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                }
+                #<?php echo esc_attr($form_id); ?> .sml-title {
+                    margin: 0 0 6px;
+                    font-size: 20px;
+                    font-weight: 700;
+                    color: #1a1a1a;
+                }
+                #<?php echo esc_attr($form_id); ?> .sml-desc {
+                    margin: 0 0 20px;
+                    font-size: 14px;
+                    color: #666;
+                }
+                #<?php echo esc_attr($form_id); ?> .sml-input {
+                    width: 100%;
+                    padding: 12px 14px;
+                    margin-bottom: 12px;
+                    border: 1px solid #ddd;
+                    border-radius: 8px;
+                    font-size: 15px;
+                    box-sizing: border-box;
+                    transition: border-color 0.2s;
+                }
+                #<?php echo esc_attr($form_id); ?> .sml-input:focus {
+                    outline: none;
+                    border-color: #000;
+                }
+                #<?php echo esc_attr($form_id); ?> .sml-btn {
+                    width: 100%;
+                    padding: 14px 20px;
+                    background: #000;
+                    color: #fff;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 15px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    transition: background 0.2s, transform 0.1s;
+                }
+                #<?php echo esc_attr($form_id); ?> .sml-btn:hover {
+                    background: #333;
+                }
+                #<?php echo esc_attr($form_id); ?> .sml-btn:active {
+                    transform: scale(0.98);
+                }
+                #<?php echo esc_attr($form_id); ?> .sml-btn:disabled {
+                    background: #666;
+                    cursor: wait;
+                }
+                #<?php echo esc_attr($form_id); ?> .sml-msg {
+                    margin-top: 14px;
+                    padding: 12px 14px;
+                    border-radius: 8px;
+                    font-size: 14px;
+                    display: none;
+                }
+                #<?php echo esc_attr($form_id); ?> .sml-msg.success {
+                    background: #e8f5e9;
+                    color: #2e7d32;
+                    display: block;
+                }
+                #<?php echo esc_attr($form_id); ?> .sml-msg.error {
+                    background: #ffebee;
+                    color: #c62828;
+                    display: block;
+                }
+            </style>
+            
             <?php if (!empty($atts['title'])): ?>
-                <h3 style="margin:0 0 8px;font-size:22px;font-weight:600;color:#0f172a;line-height:1.3"><?php echo esc_html($atts['title']); ?></h3>
+                <h3 class="sml-title"><?php echo esc_html($atts['title']); ?></h3>
             <?php endif; ?>
             <?php if (!empty($atts['description'])): ?>
-                <p style="margin:0 0 24px;color:#64748b;font-size:15px;line-height:1.5"><?php echo esc_html($atts['description']); ?></p>
+                <p class="sml-desc"><?php echo esc_html($atts['description']); ?></p>
             <?php endif; ?>
-            <form class="sml-login-form" style="display:flex;flex-direction:column;gap:16px">
-                <input 
-                    type="email" 
-                    name="email" 
-                    class="sml-email-input" 
-                    placeholder="<?php echo esc_attr($atts['placeholder']); ?>" 
-                    required 
-                    style="width:100%;padding:14px 16px;border:2px solid #e2e8f0;border-radius:12px;font-size:15px;background:#fff;box-sizing:border-box;transition:all 0.2s;font-family:inherit"
-                />
-                <?php if ($redirect): ?>
-                    <input type="hidden" name="redirect_url" value="<?php echo esc_attr($redirect); ?>" />
-                <?php endif; ?>
-                <button 
-                    type="submit" 
-                    class="sml-submit-btn" 
-                    style="width:100% !important;background:#4f46e5 !important;color:#fff !important;border:none !important;padding:14px 24px !important;border-radius:12px !important;font-size:16px !important;font-weight:600 !important;cursor:pointer !important;transition:all 0.2s !important;box-shadow:0 4px 6px rgba(79,70,229,0.25) !important;display:block !important;text-align:center !important;font-family:inherit !important;line-height:1.5 !important"
-                >
-                    <?php echo esc_html($atts['button_text']); ?>
-                </button>
+            
+            <form class="sml-form">
+                <input type="email" class="sml-input" placeholder="<?php echo esc_attr($atts['placeholder']); ?>" required>
+                <button type="submit" class="sml-btn"><?php echo esc_html($atts['button_text']); ?></button>
             </form>
-            <div class="sml-form-message" style="margin-top:16px;padding:14px 16px;border-radius:10px;display:none;font-size:14px;line-height:1.5"></div>
+            <div class="sml-msg"></div>
         </div>
-        <style>
-            .sml-login-form-container .sml-email-input:focus {
-                outline:none !important;
-                border-color:#4f46e5 !important;
-                box-shadow:0 0 0 4px rgba(79,70,229,0.1) !important;
-                background:#fafafa !important;
-            }
-            .sml-login-form-container .sml-submit-btn {
-                width:100% !important;
-                background:#4f46e5 !important;
-                color:#fff !important;
-                border:none !important;
-                padding:14px 24px !important;
-                border-radius:12px !important;
-                font-size:16px !important;
-                font-weight:600 !important;
-                cursor:pointer !important;
-                transition:all 0.2s !important;
-                box-shadow:0 4px 6px rgba(79,70,229,0.25) !important;
-                display:block !important;
-                text-align:center !important;
-                font-family:inherit !important;
-                line-height:1.5 !important;
-            }
-            .sml-login-form-container .sml-submit-btn:hover:not(:disabled) {
-                background:#4338ca !important;
-                box-shadow:0 6px 12px rgba(79,70,229,0.35) !important;
-                transform:translateY(-1px) !important;
-            }
-            .sml-login-form-container .sml-submit-btn:active:not(:disabled) {
-                transform:translateY(0) !important;
-                box-shadow:0 2px 4px rgba(79,70,229,0.25) !important;
-            }
-            .sml-login-form-container .sml-submit-btn:disabled {
-                opacity:0.7 !important;
-                cursor:not-allowed !important;
-                transform:none !important;
-            }
-        </style>
+        
         <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            (function() {
-                var container = document.querySelector('.sml-login-form-container');
-                if (!container) {
-                    console.error('Magic Login: Container not found');
+        (function() {
+            var wrapper = document.getElementById('<?php echo esc_js($form_id); ?>');
+            if (!wrapper) return;
+            
+            var form = wrapper.querySelector('.sml-form');
+            var input = wrapper.querySelector('.sml-input');
+            var btn = wrapper.querySelector('.sml-btn');
+            var msg = wrapper.querySelector('.sml-msg');
+            var btnText = btn.textContent;
+            
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                var email = input.value.trim();
+                if (!email) {
+                    msg.className = 'sml-msg error';
+                    msg.textContent = 'Please enter your email address.';
                     return;
                 }
                 
-                var form = container.querySelector('.sml-login-form');
-                if (!form) {
-                    console.error('Magic Login: Form not found');
-                    return;
-                }
+                btn.disabled = true;
+                btn.textContent = 'Sending...';
+                msg.className = 'sml-msg';
+                msg.style.display = 'none';
                 
-                var emailInput = form.querySelector('.sml-email-input');
-                var submitBtn = form.querySelector('.sml-submit-btn');
-                var messageDiv = container.querySelector('.sml-form-message');
+                var data = new FormData();
+                data.append('action', 'sml_request_login_link');
+                data.append('nonce', '<?php echo esc_js($nonce); ?>');
+                data.append('email', email);
+                <?php if ($redirect): ?>
+                data.append('redirect_url', '<?php echo esc_js($redirect); ?>');
+                <?php endif; ?>
                 
-                if (!emailInput || !submitBtn || !messageDiv) {
-                    console.error('Magic Login: Form elements not found');
-                    return;
-                }
-                
-                var originalBtnText = submitBtn.textContent;
-                var restUrl = '<?php echo esc_url(rest_url('magic-login/v1/request-new-link')); ?>';
-                
-                form.addEventListener('submit', function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
+                fetch('<?php echo esc_js($ajax_url); ?>', {
+                    method: 'POST',
+                    body: data,
+                    credentials: 'same-origin'
+                })
+                .then(function(r) { return r.json(); })
+                .then(function(res) {
+                    btn.disabled = false;
+                    btn.textContent = btnText;
                     
-                    var email = emailInput.value.trim();
-                    if (!email) {
-                        messageDiv.style.display = 'block';
-                        messageDiv.style.background = '#fef3c7';
-                        messageDiv.style.color = '#92400e';
-                        messageDiv.style.border = '1px solid #fbbf24';
-                        messageDiv.textContent = 'Please enter a valid email address.';
-                        return;
+                    if (res.success) {
+                        msg.className = 'sml-msg success';
+                        msg.textContent = '✓ ' + (res.data.message || 'Login link sent! Check your email.');
+                        input.value = '';
+                    } else {
+                        msg.className = 'sml-msg error';
+                        msg.textContent = res.data.message || 'An error occurred.';
                     }
-                    
-                    submitBtn.disabled = true;
-                    submitBtn.textContent = 'Sending...';
-                    messageDiv.style.display = 'none';
-                    
-                    var formData = {
-                        email: email
-                    };
-                    
-                    <?php if ($redirect): ?>
-                    formData.redirect_url = '<?php echo esc_js($redirect); ?>';
-                    <?php endif; ?>
-                    
-                    console.log('Magic Login: Sending request to', restUrl);
-                    
-                    fetch(restUrl, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify(formData)
-                    })
-                    .then(function(response) {
-                        console.log('Magic Login: Response status', response.status);
-                        console.log('Magic Login: Content-Type', response.headers.get('content-type'));
-                        
-                        // Check if response is actually JSON
-                        var contentType = response.headers.get('content-type');
-                        if (contentType && contentType.includes('application/json')) {
-                            if (!response.ok) {
-                                return response.json().then(function(err) {
-                                    throw new Error(err.message || 'HTTP error! status: ' + response.status);
-                                });
-                            }
-                            return response.json();
-                        } else {
-                            // Response is HTML (error page), get text and show error
-                            return response.text().then(function(html) {
-                                console.error('Magic Login: Received HTML instead of JSON', html.substring(0, 200));
-                                throw new Error('Server returned an error page. Please refresh and try again.');
-                            });
-                        }
-                    })
-                    .then(function(data) {
-                        console.log('Magic Login: Response data', data);
-                        submitBtn.disabled = false;
-                        submitBtn.textContent = originalBtnText;
-                        messageDiv.style.display = 'block';
-                        
-                        if (data.success) {
-                            messageDiv.style.background = '#d1fae5';
-                            messageDiv.style.color = '#065f46';
-                            messageDiv.style.border = '1px solid #86efac';
-                            messageDiv.textContent = '✓ A login link has been sent to your email address. Please check your inbox.';
-                            emailInput.value = '';
-                        } else {
-                            messageDiv.style.background = '#fee2e2';
-                            messageDiv.style.color = '#991b1b';
-                            messageDiv.style.border = '1px solid #fca5a5';
-                            messageDiv.textContent = data.message || 'An error occurred. Please try again later.';
-                        }
-                    })
-                    .catch(function(error) {
-                        console.error('Magic Login Form Error:', error);
-                        submitBtn.disabled = false;
-                        submitBtn.textContent = originalBtnText;
-                        messageDiv.style.display = 'block';
-                        messageDiv.style.background = '#fee2e2';
-                        messageDiv.style.color = '#991b1b';
-                        messageDiv.style.border = '1px solid #fca5a5';
-                        messageDiv.textContent = 'Error: ' + (error.message || 'An error occurred. Please refresh the page and try again.');
-                    });
+                })
+                .catch(function(err) {
+                    btn.disabled = false;
+                    btn.textContent = btnText;
+                    msg.className = 'sml-msg error';
+                    msg.textContent = 'Network error. Please try again.';
+                    console.error('SML Error:', err);
                 });
-            })();
-        });
+            });
+        })();
         </script>
         <?php
         return ob_get_clean();
