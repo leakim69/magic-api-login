@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.7.2
+ * Version: 2.8.0
  * Author: Creative Chili
  */
 
@@ -35,6 +35,9 @@ class SimpleMagicLogin {
         
         // Deferred login hooks handler (runs after redirect to avoid blocking)
         add_action('sml_deferred_login_hooks', [$this, 'handle_deferred_login_hooks'], 10, 5);
+        
+        // Shortcode for email login form
+        add_shortcode('magic_login_form', [$this, 'render_login_form_shortcode']);
         
         // User profile actions
         add_action('show_user_profile', [$this, 'user_profile_revoke_section']);
@@ -130,6 +133,12 @@ class SimpleMagicLogin {
                         return is_email($param);
                     },
                     'sanitize_callback' => 'sanitize_email'
+                ],
+                'redirect_url' => [
+                    'required' => false,
+                    'type' => 'string',
+                    'description' => 'URL to redirect to after login',
+                    'sanitize_callback' => 'esc_url_raw'
                 ]
             ]
         ]);
@@ -553,8 +562,12 @@ class SimpleMagicLogin {
         $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
         $user_agent = isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 255) : '';
         
-        // Get return URL setting
-        $return_url_setting = isset($settings['return_url']) && $settings['return_url'] !== '' ? $settings['return_url'] : home_url('/');
+        // Get redirect URL - use provided redirect_url or fall back to settings
+        $redirect_url = $request->get_param('redirect_url');
+        if (empty($redirect_url)) {
+            $redirect_url = isset($settings['return_url']) && $settings['return_url'] !== '' ? $settings['return_url'] : home_url('/');
+        }
+        $redirect_url = esc_url_raw($redirect_url);
         
         // Insert with hashed token
         $insert = $wpdb->insert($this->table, [
@@ -584,7 +597,7 @@ class SimpleMagicLogin {
             'sml_action' => 'login',
             'sml_token' => $token,
             'sml_user' => $user->ID,
-            'sml_redirect' => $return_url_setting
+            'sml_redirect' => $redirect_url
         ];
         
         $login_url = add_query_arg($login_url_params, home_url('/'));
@@ -953,6 +966,141 @@ class SimpleMagicLogin {
         // Validate and sanitize URL
         $validated = esc_url_raw($raw_redirect);
         return $validated ?: admin_url();
+    }
+
+    /**
+     * Render shortcode for magic login email form
+     * Usage: [magic_login_form]
+     * 
+     * @param array $atts Shortcode attributes
+     * @return string HTML form
+     */
+    public function render_login_form_shortcode($atts = []) {
+        $atts = shortcode_atts([
+            'title' => 'Request Login Link',
+            'description' => 'Enter your email address and we\'ll send you a magic login link.',
+            'button_text' => 'Send Login Link',
+            'placeholder' => 'your@email.com',
+            'redirect_url' => ''
+        ], $atts, 'magic_login_form');
+        
+        $rest_url = esc_url(rest_url('magic-login/v1/request-new-link'));
+        $nonce = wp_create_nonce('wp_rest');
+        $redirect = !empty($atts['redirect_url']) ? esc_attr($atts['redirect_url']) : '';
+        
+        ob_start();
+        ?>
+        <div class="sml-login-form-container" style="max-width:480px;margin:0 auto;padding:24px;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 4px 6px rgba(0,0,0,0.1)">
+            <?php if (!empty($atts['title'])): ?>
+                <h3 style="margin:0 0 12px;font-size:20px;color:#0f172a"><?php echo esc_html($atts['title']); ?></h3>
+            <?php endif; ?>
+            <?php if (!empty($atts['description'])): ?>
+                <p style="margin:0 0 20px;color:#475569;font-size:14px"><?php echo esc_html($atts['description']); ?></p>
+            <?php endif; ?>
+            <form class="sml-login-form" style="display:flex;flex-direction:column;gap:12px">
+                <input 
+                    type="email" 
+                    name="email" 
+                    class="sml-email-input" 
+                    placeholder="<?php echo esc_attr($atts['placeholder']); ?>" 
+                    required 
+                    style="width:100%;padding:12px 16px;border:1px solid #cbd5e1;border-radius:12px;font-size:15px;background:#fff;box-sizing:border-box"
+                />
+                <?php if ($redirect): ?>
+                    <input type="hidden" name="redirect_url" value="<?php echo esc_attr($redirect); ?>" />
+                <?php endif; ?>
+                <button 
+                    type="submit" 
+                    class="sml-submit-btn" 
+                    style="background:#4f46e5;color:#fff;border:none;padding:12px 24px;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;transition:background 0.2s"
+                >
+                    <?php echo esc_html($atts['button_text']); ?>
+                </button>
+            </form>
+            <div class="sml-form-message" style="margin-top:12px;padding:12px;border-radius:8px;display:none"></div>
+        </div>
+        <style>
+            .sml-login-form-container .sml-email-input:focus {
+                outline:none;
+                border-color:#4f46e5;
+                box-shadow:0 0 0 3px rgba(79,70,229,0.15);
+            }
+            .sml-login-form-container .sml-submit-btn:hover {
+                background:#4338ca;
+            }
+            .sml-login-form-container .sml-submit-btn:disabled {
+                opacity:0.6;
+                cursor:not-allowed;
+            }
+        </style>
+        <script>
+        (function() {
+            var form = document.querySelector('.sml-login-form');
+            if (!form) return;
+            
+            var emailInput = form.querySelector('.sml-email-input');
+            var submitBtn = form.querySelector('.sml-submit-btn');
+            var messageDiv = form.parentElement.querySelector('.sml-form-message');
+            var originalBtnText = submitBtn.textContent;
+            
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                var email = emailInput.value.trim();
+                if (!email) return;
+                
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Sending...';
+                messageDiv.style.display = 'none';
+                
+                var formData = {
+                    email: email
+                };
+                
+                <?php if ($redirect): ?>
+                formData.redirect_url = '<?php echo esc_js($redirect); ?>';
+                <?php endif; ?>
+                
+                fetch('<?php echo esc_url($rest_url); ?>', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-WP-Nonce': '<?php echo esc_js($nonce); ?>'
+                    },
+                    body: JSON.stringify(formData)
+                })
+                .then(function(response) { return response.json(); })
+                .then(function(data) {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = originalBtnText;
+                    messageDiv.style.display = 'block';
+                    
+                    if (data.success) {
+                        messageDiv.style.background = '#d1fae5';
+                        messageDiv.style.color = '#065f46';
+                        messageDiv.style.border = '1px solid #86efac';
+                        messageDiv.textContent = '✓ A login link has been sent to your email address. Please check your inbox.';
+                        emailInput.value = '';
+                    } else {
+                        messageDiv.style.background = '#fee2e2';
+                        messageDiv.style.color = '#991b1b';
+                        messageDiv.style.border = '1px solid #fca5a5';
+                        messageDiv.textContent = data.message || 'An error occurred. Please try again later.';
+                    }
+                })
+                .catch(function(error) {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = originalBtnText;
+                    messageDiv.style.display = 'block';
+                    messageDiv.style.background = '#fee2e2';
+                    messageDiv.style.color = '#991b1b';
+                    messageDiv.style.border = '1px solid #fca5a5';
+                    messageDiv.textContent = 'An error occurred. Please try again later.';
+                });
+            });
+        })();
+        </script>
+        <?php
+        return ob_get_clean();
     }
 
     public function add_settings_page() {
@@ -1406,6 +1554,35 @@ class SimpleMagicLogin {
 							</button>
 							<p class="description">Regenerating immediately revokes the previous key.</p>
 						</form>
+                    </section>
+
+                    <section class="sml-card sml-card--full">
+                        <h2>Shortcode</h2>
+                        <p class="sml-card-subtitle">Display a login form on any page or post using the shortcode.</p>
+                        
+                        <h3>Basic Usage</h3>
+                        <p>Add the shortcode to any page or post:</p>
+                        <pre>[magic_login_form]</pre>
+                        
+                        <h3>Customization Options</h3>
+                        <p>You can customize the form with these attributes:</p>
+                        <pre>[magic_login_form title="Get Your Login Link" description="Enter your email to receive a magic login link." button_text="Send Link" placeholder="email@example.com" redirect_url="/dashboard"]</pre>
+                        
+                        <h4>Available Attributes</h4>
+                        <ul class="sml-list">
+                            <li><strong>title</strong> - Form title (default: "Request Login Link")</li>
+                            <li><strong>description</strong> - Description text below the title</li>
+                            <li><strong>button_text</strong> - Submit button text (default: "Send Login Link")</li>
+                            <li><strong>placeholder</strong> - Email input placeholder (default: "your@email.com")</li>
+                            <li><strong>redirect_url</strong> - Where to redirect after login (optional, uses Return URL setting if not provided)</li>
+                        </ul>
+                        
+                        <h3>Example</h3>
+                        <pre>[magic_login_form title="Login to Your Account" redirect_url="/my-account"]</pre>
+                        
+                        <p class="description" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e2e8f0;">
+                            <strong>Note:</strong> The form uses the same security features as the API, including rate limiting and CSRF protection. Users will receive an email with their magic login link.
+                        </p>
                     </section>
 
                     <section class="sml-card sml-card--full">
