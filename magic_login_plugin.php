@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.7.0
+ * Version: 2.7.1
  * Author: Creative Chili
  */
 
@@ -33,6 +33,9 @@ class SimpleMagicLogin {
         add_action('init', [SimpleMagicLogin::class, 'verify_and_login'], 1);
         add_action('sml_purge_tokens', [$this, 'purge_expired_tokens']);
         
+        // Deferred login hooks handler (runs after redirect to avoid blocking)
+        add_action('sml_deferred_login_hooks', [$this, 'handle_deferred_login_hooks'], 10, 5);
+        
         // User profile actions
         add_action('show_user_profile', [$this, 'user_profile_revoke_section']);
         add_action('edit_user_profile', [$this, 'user_profile_revoke_section']);
@@ -41,6 +44,27 @@ class SimpleMagicLogin {
         
         // Ensure schema is up to date
         $this->ensure_schema();
+    }
+    
+    /**
+     * Handle deferred login hooks to avoid blocking redirect
+     * This runs after the user has been redirected, so slow plugins don't delay login
+     * Note: wp_login hook is skipped by default for magic logins to avoid delays from other plugins
+     * If you need wp_login to fire, you can hook into sml_user_logged_in instead
+     */
+    public function handle_deferred_login_hooks($user_login, $user_id, $current_ip, $current_ua, $original_ip) {
+        // Skip wp_login hook by default - it's often slow due to security/analytics plugins
+        // Plugins that need login events should hook into sml_user_logged_in instead
+        // Uncomment the line below if you specifically need wp_login to fire:
+        // do_action('wp_login', $user_login, get_userdata($user_id));
+        
+        // Fire custom hook (faster, less likely to have slow listeners)
+        do_action('sml_user_logged_in', $user_id, $current_ip, $current_ua);
+        
+        // Optional: Alert if IP changed
+        if (!empty($original_ip) && $original_ip !== $current_ip) {
+            do_action('sml_ip_changed', $user_id, $original_ip, $current_ip);
+        }
     }
 
     public function register_rest_routes() {
@@ -878,32 +902,34 @@ class SimpleMagicLogin {
             $row['id']
         ));
         
-        // Optional: Alert if IP changed (fire action but don't block)
-        if (!empty($row['ip_address']) && $row['ip_address'] !== $current_ip) {
-            do_action('sml_ip_changed', $user_id, $row['ip_address'], $current_ip);
+        // Get redirect URL BEFORE login (faster, avoids loading user meta)
+        $raw_redirect = isset($_POST['sml_redirect']) ? $_POST['sml_redirect'] : (isset($_GET['sml_redirect']) ? $_GET['sml_redirect'] : '');
+        if ($raw_redirect === '') {
+            // Cache settings lookup to avoid repeated get_option calls
+            static $cached_settings = null;
+            if ($cached_settings === null) {
+                $cached_settings = get_option('sml_settings', []);
+            }
+            $raw_redirect = isset($cached_settings['return_url']) && $cached_settings['return_url'] !== '' ? $cached_settings['return_url'] : home_url('/');
         }
+        $redirect_url = self::fast_redirect($raw_redirect);
         
         // Log in user (session cookie by default, not "remember me")
         wp_set_auth_cookie($user_id, false);
         wp_set_current_user($user_id);
         
-        // Fire wp_login hook
-        do_action('wp_login', $user->user_login, get_userdata($user_id));
+        // Defer slow hooks to avoid blocking redirect
+        // Use spawn_cron to trigger immediately if possible, otherwise schedule
+        $hook_args = [$user->user_login, $user_id, $current_ip, $current_ua, $row['ip_address']];
+        wp_schedule_single_event(time(), 'sml_deferred_login_hooks', $hook_args);
         
-        // Fire custom hook (non-blocking)
-        do_action('sml_user_logged_in', $user_id, $current_ip, $current_ua);
-        
-        // Fast redirect validation and redirect
-        $raw_redirect = isset($_POST['sml_redirect']) ? $_POST['sml_redirect'] : (isset($_GET['sml_redirect']) ? $_GET['sml_redirect'] : '');
-        if ($raw_redirect === '') {
-            $settings = get_option('sml_settings', []);
-            $raw_redirect = isset($settings['return_url']) && $settings['return_url'] !== '' ? $settings['return_url'] : home_url('/');
+        // Try to spawn cron immediately (non-blocking)
+        if (function_exists('spawn_cron')) {
+            spawn_cron();
         }
         
-        $redirect_url = self::fast_redirect($raw_redirect);
-        
-        // Use wp_safe_redirect but with pre-validated URL for speed
-        wp_safe_redirect($redirect_url, 302);
+        // Use wp_redirect for speed (we've already validated the URL)
+        wp_redirect($redirect_url, 302);
         exit;
     }
     
