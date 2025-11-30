@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.6.1
+ * Version: 2.7.0
  * Author: Creative Chili
  */
 
@@ -760,10 +760,78 @@ class SimpleMagicLogin {
         if (empty($_GET['sml_action']) || $_GET['sml_action'] !== 'login') return;
         if (empty($_GET['sml_token']) || empty($_GET['sml_user'])) return;
 
-        global $wpdb;
-        $table = $wpdb->prefix . 'magic_login_tokens';
+        // If processing POST, do the actual login
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sml_process'])) {
+            self::process_login();
+            return;
+        }
+
+        // Otherwise, show loading page that will process login
+        self::render_loading_page();
+        exit;
+    }
+
+    /**
+     * Render a loading page that processes login in background
+     */
+    private static function render_loading_page() {
         $token = sanitize_text_field($_GET['sml_token']);
         $user_id = (int)$_GET['sml_user'];
+        $redirect = isset($_GET['sml_redirect']) ? esc_url_raw($_GET['sml_redirect']) : '';
+        $site_name = esc_html(get_bloginfo('name'));
+        $current_url = esc_url(add_query_arg([
+            'sml_action' => 'login',
+            'sml_token' => $token,
+            'sml_user' => $user_id,
+            'sml_redirect' => $redirect
+        ], home_url('/')));
+        
+        header('Content-Type: text/html; charset=utf-8');
+        echo "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Logging you in – {$site_name}</title><style>
+			:root{--bg:#f8fafc;--card:#ffffff;--text:#0f172a;--muted:#475569;--primary:#4f46e5}
+			*{box-sizing:border-box;margin:0;padding:0}
+			body{background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;min-height:100vh;display:grid;place-items:center;padding:32px}
+			.card{background:var(--card);max-width:480px;width:100%;border:1px solid #e2e8f0;border-radius:16px;padding:48px 32px;box-shadow:0 20px 45px rgba(15,23,42,.08);text-align:center}
+			.spinner{width:48px;height:48px;border:4px solid #e2e8f0;border-top-color:var(--primary);border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 24px}
+			@keyframes spin{to{transform:rotate(360deg)}}
+			h1{font-size:20px;margin:0 0 8px;color:var(--text)}
+			p{color:var(--muted);font-size:15px;margin:0}
+		</style></head><body><div class=\"card\"><div class=\"spinner\" aria-hidden=\"true\"></div><h1>Logging you in...</h1><p>Please wait while we sign you in.</p></div>
+		<form id=\"login-form\" method=\"post\" action=\"{$current_url}\" style=\"display:none\">
+			<input type=\"hidden\" name=\"sml_process\" value=\"1\">
+			<input type=\"hidden\" name=\"sml_token\" value=\"" . esc_attr($token) . "\">
+			<input type=\"hidden\" name=\"sml_user\" value=\"" . esc_attr($user_id) . "\">
+			" . ($redirect ? '<input type="hidden" name="sml_redirect" value="' . esc_attr($redirect) . '">' : '') . "
+		</form>
+		<script>
+		// Immediately submit form to process login
+		(function() {
+			var form = document.getElementById('login-form');
+			if (form) {
+				// Small delay to ensure page is rendered
+				setTimeout(function() {
+					form.submit();
+				}, 50);
+			}
+		})();
+		</script></body></html>";
+    }
+
+    /**
+     * Process the actual login
+     */
+    private static function process_login() {
+        // Get token from POST or GET
+        $token = isset($_POST['sml_token']) ? sanitize_text_field($_POST['sml_token']) : sanitize_text_field($_GET['sml_token']);
+        $user_id = isset($_POST['sml_user']) ? (int)$_POST['sml_user'] : (int)$_GET['sml_user'];
+        
+        if (empty($token) || empty($user_id)) {
+            self::render_login_error_page('Invalid link', 'This login link is invalid. Please request a new one.');
+            exit;
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'magic_login_tokens';
         
         // Hash the token for comparison
         if (!defined('AUTH_SALT') || empty(AUTH_SALT)) {
@@ -826,13 +894,13 @@ class SimpleMagicLogin {
         do_action('sml_user_logged_in', $user_id, $current_ip, $current_ua);
         
         // Fast redirect validation and redirect
-		$raw_redirect = isset($_GET['sml_redirect']) ? $_GET['sml_redirect'] : '';
-		if ($raw_redirect === '') {
-			$settings = get_option('sml_settings', []);
-			$raw_redirect = isset($settings['return_url']) && $settings['return_url'] !== '' ? $settings['return_url'] : home_url('/');
-		}
-		
-		$redirect_url = self::fast_redirect($raw_redirect);
+        $raw_redirect = isset($_POST['sml_redirect']) ? $_POST['sml_redirect'] : (isset($_GET['sml_redirect']) ? $_GET['sml_redirect'] : '');
+        if ($raw_redirect === '') {
+            $settings = get_option('sml_settings', []);
+            $raw_redirect = isset($settings['return_url']) && $settings['return_url'] !== '' ? $settings['return_url'] : home_url('/');
+        }
+        
+        $redirect_url = self::fast_redirect($raw_redirect);
         
         // Use wp_safe_redirect but with pre-validated URL for speed
         wp_safe_redirect($redirect_url, 302);
