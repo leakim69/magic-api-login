@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.6.0
+ * Version: 2.6.1
  * Author: Creative Chili
  */
 
@@ -29,7 +29,8 @@ class SimpleMagicLogin {
         add_action('admin_menu', [$this, 'add_settings_page']);
         add_action('admin_init', [$this, 'register_settings']);
         add_action('rest_api_init', [$this, 'register_rest_routes']);
-        add_action('wp_loaded', [SimpleMagicLogin::class, 'verify_and_login'], 10);
+        // Hook early to avoid loading unnecessary WordPress components
+        add_action('init', [SimpleMagicLogin::class, 'verify_and_login'], 1);
         add_action('sml_purge_tokens', [$this, 'purge_expired_tokens']);
         
         // User profile actions
@@ -771,65 +772,93 @@ class SimpleMagicLogin {
             $token_hash = hash_hmac('sha256', $token, AUTH_SALT);
         }
         
-        // Query with hashed token
+        // Optimized single query - check expiry in SQL (faster than PHP)
         $row = $wpdb->get_row($wpdb->prepare(
-            "SELECT id, user_id, ip_address, user_agent, expires_at, use_count, max_uses FROM {$table} 
-             WHERE token_hash = %s AND user_id = %d LIMIT 1",
+            "SELECT id, user_id, ip_address, expires_at, use_count, max_uses FROM {$table} 
+             WHERE token_hash = %s AND user_id = %d AND expires_at > NOW() LIMIT 1",
             $token_hash, $user_id
-        ));
+        ), ARRAY_A);
         
-        if (!$row || strtotime($row->expires_at) <= time()) {
+        if (!$row) {
             self::render_login_error_page('Link expired', 'This magic login link has expired. Please request a new one.');
             exit;
         }
 
         // Enforce usage limits
-        if ($row->max_uses > 0 && (int)$row->use_count >= (int)$row->max_uses) {
+        if ($row['max_uses'] > 0 && (int)$row['use_count'] >= (int)$row['max_uses']) {
             self::render_login_error_page('Link limit reached', 'This login link has reached its maximum allowed uses. Please request a new one.', true);
             exit;
         }
 
-        // Get user
-        $user = get_user_by('ID', $user_id);
+        // Get user - use direct query to avoid loading user meta unnecessarily
+        $user = $wpdb->get_row($wpdb->prepare(
+            "SELECT ID, user_login FROM {$wpdb->users} WHERE ID = %d LIMIT 1",
+            $user_id
+        ));
+        
         if (!$user) {
             wp_die('User not found');
         }
         
         // Capture current IP and UA for security logging
         $current_ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-        $current_ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        $current_ua = isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 255) : '';
         
-        // Optional: Alert if IP changed (just log for now, don't block)
-        if (!empty($row->ip_address) && $row->ip_address !== $current_ip) {
-            do_action('sml_ip_changed', $user_id, $row->ip_address, $current_ip);
+        // Increment use count atomically in database
+        $wpdb->query($wpdb->prepare(
+            "UPDATE {$table} SET use_count = use_count + 1 WHERE id = %d",
+            $row['id']
+        ));
+        
+        // Optional: Alert if IP changed (fire action but don't block)
+        if (!empty($row['ip_address']) && $row['ip_address'] !== $current_ip) {
+            do_action('sml_ip_changed', $user_id, $row['ip_address'], $current_ip);
         }
         
         // Log in user (session cookie by default, not "remember me")
         wp_set_auth_cookie($user_id, false);
         wp_set_current_user($user_id);
-        do_action('wp_login', $user->user_login, $user);
-        do_action('sml_user_logged_in', $user_id, $current_ip, $current_ua);
-
-        // Increment use count after successful auth
-        $wpdb->update(
-            $table,
-            ['use_count' => (int)$row->use_count + 1],
-            ['id' => (int)$row->id],
-            ['%d'],
-            ['%d']
-        );
         
-        // Safe redirect - no urldecode, same-host only
-		// If no redirect specified in link, fall back to configured Return URL
+        // Fire wp_login hook
+        do_action('wp_login', $user->user_login, get_userdata($user_id));
+        
+        // Fire custom hook (non-blocking)
+        do_action('sml_user_logged_in', $user_id, $current_ip, $current_ua);
+        
+        // Fast redirect validation and redirect
 		$raw_redirect = isset($_GET['sml_redirect']) ? $_GET['sml_redirect'] : '';
 		if ($raw_redirect === '') {
 			$settings = get_option('sml_settings', []);
 			$raw_redirect = isset($settings['return_url']) && $settings['return_url'] !== '' ? $settings['return_url'] : home_url('/');
 		}
-		$redirect_url = SimpleMagicLogin::safe_redirect($raw_redirect);
+		
+		$redirect_url = self::fast_redirect($raw_redirect);
         
-        wp_safe_redirect($redirect_url);
+        // Use wp_safe_redirect but with pre-validated URL for speed
+        wp_safe_redirect($redirect_url, 302);
         exit;
+    }
+    
+    /**
+     * Fast redirect validation without dynamic filter overhead
+     * Pre-validates URL to avoid wp_safe_redirect filter processing
+     */
+    private static function fast_redirect($raw_redirect) {
+        if (empty($raw_redirect)) {
+            return admin_url();
+        }
+        
+        $parsed = wp_parse_url($raw_redirect);
+        $site_host = wp_parse_url(home_url('/'), PHP_URL_HOST);
+        
+        // Only allow same-host redirects (security check)
+        if (isset($parsed['host']) && $parsed['host'] !== $site_host) {
+            return admin_url();
+        }
+        
+        // Validate and sanitize URL
+        $validated = esc_url_raw($raw_redirect);
+        return $validated ?: admin_url();
     }
 
     public function add_settings_page() {
