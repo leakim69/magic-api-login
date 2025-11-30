@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.7.1
+ * Version: 2.7.2
  * Author: Creative Chili
  */
 
@@ -914,8 +914,8 @@ class SimpleMagicLogin {
         }
         $redirect_url = self::fast_redirect($raw_redirect);
         
-        // Log in user (session cookie by default, not "remember me")
-        wp_set_auth_cookie($user_id, false);
+        // Log in user with "Remember Me" enabled for persistent sessions
+        wp_set_auth_cookie($user_id, true);
         wp_set_current_user($user_id);
         
         // Defer slow hooks to avoid blocking redirect
