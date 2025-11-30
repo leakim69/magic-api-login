@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.8.1
+ * Version: 2.8.2
  * Author: Creative Chili
  */
 
@@ -38,6 +38,9 @@ class SimpleMagicLogin {
         
         // Shortcode for email login form
         add_shortcode('magic_login_form', [$this, 'render_login_form_shortcode']);
+        
+        // Add REST API nonce to page head for JavaScript access
+        add_action('wp_head', [$this, 'add_rest_api_nonce']);
         
         // User profile actions
         add_action('show_user_profile', [$this, 'user_profile_revoke_section']);
@@ -983,6 +986,13 @@ class SimpleMagicLogin {
     }
 
     /**
+     * Add REST API nonce to page head for JavaScript access
+     */
+    public function add_rest_api_nonce() {
+        echo '<meta name="wp-api-nonce" content="' . esc_attr(wp_create_nonce('wp_rest')) . '">' . "\n";
+    }
+
+    /**
      * Render shortcode for magic login email form
      * Usage: [magic_login_form]
      * 
@@ -1026,7 +1036,7 @@ class SimpleMagicLogin {
                 <button 
                     type="submit" 
                     class="sml-submit-btn" 
-                    style="width:100%;background:#4f46e5;color:#fff;border:none;padding:14px 24px;border-radius:12px;font-size:16px;font-weight:600;cursor:pointer;transition:all 0.2s;box-shadow:0 4px 6px rgba(79,70,229,0.25)"
+                    style="width:100% !important;background:#4f46e5 !important;color:#fff !important;border:none !important;padding:14px 24px !important;border-radius:12px !important;font-size:16px !important;font-weight:600 !important;cursor:pointer !important;transition:all 0.2s !important;box-shadow:0 4px 6px rgba(79,70,229,0.25) !important;display:block !important;text-align:center !important;font-family:inherit !important;line-height:1.5 !important"
                 >
                     <?php echo esc_html($atts['button_text']); ?>
                 </button>
@@ -1035,108 +1045,179 @@ class SimpleMagicLogin {
         </div>
         <style>
             .sml-login-form-container .sml-email-input:focus {
-                outline:none;
-                border-color:#4f46e5;
-                box-shadow:0 0 0 4px rgba(79,70,229,0.1);
-                background:#fafafa;
+                outline:none !important;
+                border-color:#4f46e5 !important;
+                box-shadow:0 0 0 4px rgba(79,70,229,0.1) !important;
+                background:#fafafa !important;
+            }
+            .sml-login-form-container .sml-submit-btn {
+                width:100% !important;
+                background:#4f46e5 !important;
+                color:#fff !important;
+                border:none !important;
+                padding:14px 24px !important;
+                border-radius:12px !important;
+                font-size:16px !important;
+                font-weight:600 !important;
+                cursor:pointer !important;
+                transition:all 0.2s !important;
+                box-shadow:0 4px 6px rgba(79,70,229,0.25) !important;
+                display:block !important;
+                text-align:center !important;
+                font-family:inherit !important;
+                line-height:1.5 !important;
             }
             .sml-login-form-container .sml-submit-btn:hover:not(:disabled) {
-                background:#4338ca;
-                box-shadow:0 6px 12px rgba(79,70,229,0.35);
-                transform:translateY(-1px);
+                background:#4338ca !important;
+                box-shadow:0 6px 12px rgba(79,70,229,0.35) !important;
+                transform:translateY(-1px) !important;
             }
             .sml-login-form-container .sml-submit-btn:active:not(:disabled) {
-                transform:translateY(0);
-                box-shadow:0 2px 4px rgba(79,70,229,0.25);
+                transform:translateY(0) !important;
+                box-shadow:0 2px 4px rgba(79,70,229,0.25) !important;
             }
             .sml-login-form-container .sml-submit-btn:disabled {
-                opacity:0.7;
-                cursor:not-allowed;
+                opacity:0.7 !important;
+                cursor:not-allowed !important;
                 transform:none !important;
             }
         </style>
         <script>
-        (function() {
-            var container = document.querySelector('.sml-login-form-container');
-            if (!container) return;
-            
-            var form = container.querySelector('.sml-login-form');
-            if (!form) return;
-            
-            var emailInput = form.querySelector('.sml-email-input');
-            var submitBtn = form.querySelector('.sml-submit-btn');
-            var messageDiv = container.querySelector('.sml-form-message');
-            var originalBtnText = submitBtn.textContent;
-            
-            form.addEventListener('submit', function(e) {
-                e.preventDefault();
-                var email = emailInput.value.trim();
-                if (!email) {
-                    messageDiv.style.display = 'block';
-                    messageDiv.style.background = '#fef3c7';
-                    messageDiv.style.color = '#92400e';
-                    messageDiv.style.border = '1px solid #fbbf24';
-                    messageDiv.textContent = 'Please enter a valid email address.';
+        document.addEventListener('DOMContentLoaded', function() {
+            (function() {
+                var container = document.querySelector('.sml-login-form-container');
+                if (!container) {
+                    console.error('Magic Login: Container not found');
                     return;
                 }
                 
-                submitBtn.disabled = true;
-                submitBtn.textContent = 'Sending...';
-                messageDiv.style.display = 'none';
+                var form = container.querySelector('.sml-login-form');
+                if (!form) {
+                    console.error('Magic Login: Form not found');
+                    return;
+                }
                 
-                var formData = {
-                    email: email
-                };
+                var emailInput = form.querySelector('.sml-email-input');
+                var submitBtn = form.querySelector('.sml-submit-btn');
+                var messageDiv = container.querySelector('.sml-form-message');
                 
-                <?php if ($redirect): ?>
-                formData.redirect_url = '<?php echo esc_js($redirect); ?>';
-                <?php endif; ?>
+                if (!emailInput || !submitBtn || !messageDiv) {
+                    console.error('Magic Login: Form elements not found');
+                    return;
+                }
                 
-                fetch('<?php echo esc_url($rest_url); ?>', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-WP-Nonce': '<?php echo esc_js($nonce); ?>'
-                    },
-                    credentials: 'same-origin',
-                    body: JSON.stringify(formData)
-                })
-                .then(function(response) {
-                    if (!response.ok) {
-                        throw new Error('HTTP error! status: ' + response.status);
+                var originalBtnText = submitBtn.textContent;
+                var restUrl = '<?php echo esc_url(rest_url('magic-login/v1/request-new-link')); ?>';
+                
+                // Function to get fresh nonce
+                function getNonce() {
+                    // Try to get nonce from wpApiSettings if available
+                    if (typeof wpApiSettings !== 'undefined' && wpApiSettings.nonce) {
+                        return wpApiSettings.nonce;
                     }
-                    return response.json();
-                })
-                .then(function(data) {
-                    submitBtn.disabled = false;
-                    submitBtn.textContent = originalBtnText;
-                    messageDiv.style.display = 'block';
+                    // Fallback: get from meta tag
+                    var metaNonce = document.querySelector('meta[name="wp-api-nonce"]');
+                    if (metaNonce) {
+                        return metaNonce.getAttribute('content');
+                    }
+                    // Last resort: use PHP-generated nonce
+                    return '<?php echo esc_js(wp_create_nonce('wp_rest')); ?>';
+                }
+                
+                form.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
                     
-                    if (data.success) {
-                        messageDiv.style.background = '#d1fae5';
-                        messageDiv.style.color = '#065f46';
-                        messageDiv.style.border = '1px solid #86efac';
-                        messageDiv.textContent = '✓ A login link has been sent to your email address. Please check your inbox.';
-                        emailInput.value = '';
-                    } else {
+                    var email = emailInput.value.trim();
+                    if (!email) {
+                        messageDiv.style.display = 'block';
+                        messageDiv.style.background = '#fef3c7';
+                        messageDiv.style.color = '#92400e';
+                        messageDiv.style.border = '1px solid #fbbf24';
+                        messageDiv.textContent = 'Please enter a valid email address.';
+                        return;
+                    }
+                    
+                    submitBtn.disabled = true;
+                    submitBtn.textContent = 'Sending...';
+                    messageDiv.style.display = 'none';
+                    
+                    // Get fresh nonce
+                    var nonce = getNonce();
+                    
+                    var formData = {
+                        email: email
+                    };
+                    
+                    <?php if ($redirect): ?>
+                    formData.redirect_url = '<?php echo esc_js($redirect); ?>';
+                    <?php endif; ?>
+                    
+                    console.log('Magic Login: Sending request to', restUrl);
+                    console.log('Magic Login: Nonce', nonce ? 'present' : 'missing');
+                    
+                    fetch(restUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-WP-Nonce': nonce
+                        },
+                        credentials: 'same-origin',
+                        body: JSON.stringify(formData)
+                    })
+                    .then(function(response) {
+                        console.log('Magic Login: Response status', response.status);
+                        console.log('Magic Login: Content-Type', response.headers.get('content-type'));
+                        
+                        // Check if response is actually JSON
+                        var contentType = response.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            if (!response.ok) {
+                                return response.json().then(function(err) {
+                                    throw new Error(err.message || 'HTTP error! status: ' + response.status);
+                                });
+                            }
+                            return response.json();
+                        } else {
+                            // Response is HTML (error page), get text and show error
+                            return response.text().then(function(html) {
+                                console.error('Magic Login: Received HTML instead of JSON', html.substring(0, 200));
+                                throw new Error('Server returned an error page. Please refresh and try again.');
+                            });
+                        }
+                    })
+                    .then(function(data) {
+                        console.log('Magic Login: Response data', data);
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = originalBtnText;
+                        messageDiv.style.display = 'block';
+                        
+                        if (data.success) {
+                            messageDiv.style.background = '#d1fae5';
+                            messageDiv.style.color = '#065f46';
+                            messageDiv.style.border = '1px solid #86efac';
+                            messageDiv.textContent = '✓ A login link has been sent to your email address. Please check your inbox.';
+                            emailInput.value = '';
+                        } else {
+                            messageDiv.style.background = '#fee2e2';
+                            messageDiv.style.color = '#991b1b';
+                            messageDiv.style.border = '1px solid #fca5a5';
+                            messageDiv.textContent = data.message || 'An error occurred. Please try again later.';
+                        }
+                    })
+                    .catch(function(error) {
+                        console.error('Magic Login Form Error:', error);
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = originalBtnText;
+                        messageDiv.style.display = 'block';
                         messageDiv.style.background = '#fee2e2';
                         messageDiv.style.color = '#991b1b';
                         messageDiv.style.border = '1px solid #fca5a5';
-                        messageDiv.textContent = data.message || 'An error occurred. Please try again later.';
-                    }
-                })
-                .catch(function(error) {
-                    console.error('Magic Login Form Error:', error);
-                    submitBtn.disabled = false;
-                    submitBtn.textContent = originalBtnText;
-                    messageDiv.style.display = 'block';
-                    messageDiv.style.background = '#fee2e2';
-                    messageDiv.style.color = '#991b1b';
-                    messageDiv.style.border = '1px solid #fca5a5';
-                    messageDiv.textContent = 'An error occurred. Please check your browser console for details or try again later.';
+                        messageDiv.textContent = 'Error: ' + (error.message || 'An error occurred. Please refresh the page and try again.');
+                    });
                 });
-            });
-        })();
+            })();
+        });
         </script>
         <?php
         return ob_get_clean();
