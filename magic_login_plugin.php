@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.8.2
+ * Version: 2.8.3
  * Author: Creative Chili
  */
 
@@ -38,9 +38,6 @@ class SimpleMagicLogin {
         
         // Shortcode for email login form
         add_shortcode('magic_login_form', [$this, 'render_login_form_shortcode']);
-        
-        // Add REST API nonce to page head for JavaScript access
-        add_action('wp_head', [$this, 'add_rest_api_nonce']);
         
         // User profile actions
         add_action('show_user_profile', [$this, 'user_profile_revoke_section']);
@@ -129,12 +126,9 @@ class SimpleMagicLogin {
             'permission_callback' => '__return_true',
             'args' => [
                 'email' => [
-                    'required' => true,
+                    'required' => false,
                     'type' => 'string',
                     'description' => 'User email address',
-                    'validate_callback' => function($param) {
-                        return is_email($param);
-                    },
                     'sanitize_callback' => 'sanitize_email'
                 ],
                 'redirect_url' => [
@@ -473,19 +467,32 @@ class SimpleMagicLogin {
     }
 
     public function api_request_new_link(WP_REST_Request $request) {
-        // Verify nonce for CSRF protection
-        $nonce = $request->get_header('X-WP-Nonce');
-        // Also check for nonce in request body (some setups need this)
-        if (empty($nonce)) {
-            $nonce = $request->get_param('_wpnonce');
-        }
+        // For public endpoints (non-logged-in users requesting login links),
+        // we rely on rate limiting instead of nonce verification since nonces
+        // don't work reliably for anonymous users. This is a common pattern
+        // for password reset and magic link functionality.
         
-        if (!$nonce || !wp_verify_nonce($nonce, 'wp_rest')) {
-            error_log('[SML] Nonce verification failed. Nonce: ' . ($nonce ? 'present' : 'missing'));
+        // IP-based rate limiting to prevent abuse
+        $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+        $ip_rate_key = 'sml_ip_rate_' . md5($ip);
+        $ip_limit = 10; // 10 requests per IP
+        $ip_window = 300; // per 5 minutes
+        
+        $ip_data = get_transient($ip_rate_key);
+        if ($ip_data === false) {
+            $ip_data = ['count' => 0, 'time' => time()];
+        }
+        if (time() - $ip_data['time'] > $ip_window) {
+            $ip_data = ['count' => 0, 'time' => time()];
+        }
+        $ip_data['count']++;
+        set_transient($ip_rate_key, $ip_data, $ip_window);
+        
+        if ($ip_data['count'] > $ip_limit) {
             return new WP_REST_Response([
                 'success' => false,
-                'message' => 'Security check failed. Please refresh the page and try again.'
-            ], 403);
+                'message' => 'Too many requests. Please try again later.'
+            ], 429);
         }
         
         // Ensure schema is current before inserting
@@ -986,13 +993,6 @@ class SimpleMagicLogin {
     }
 
     /**
-     * Add REST API nonce to page head for JavaScript access
-     */
-    public function add_rest_api_nonce() {
-        echo '<meta name="wp-api-nonce" content="' . esc_attr(wp_create_nonce('wp_rest')) . '">' . "\n";
-    }
-
-    /**
      * Render shortcode for magic login email form
      * Usage: [magic_login_form]
      * 
@@ -1109,21 +1109,6 @@ class SimpleMagicLogin {
                 var originalBtnText = submitBtn.textContent;
                 var restUrl = '<?php echo esc_url(rest_url('magic-login/v1/request-new-link')); ?>';
                 
-                // Function to get fresh nonce
-                function getNonce() {
-                    // Try to get nonce from wpApiSettings if available
-                    if (typeof wpApiSettings !== 'undefined' && wpApiSettings.nonce) {
-                        return wpApiSettings.nonce;
-                    }
-                    // Fallback: get from meta tag
-                    var metaNonce = document.querySelector('meta[name="wp-api-nonce"]');
-                    if (metaNonce) {
-                        return metaNonce.getAttribute('content');
-                    }
-                    // Last resort: use PHP-generated nonce
-                    return '<?php echo esc_js(wp_create_nonce('wp_rest')); ?>';
-                }
-                
                 form.addEventListener('submit', function(e) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1142,9 +1127,6 @@ class SimpleMagicLogin {
                     submitBtn.textContent = 'Sending...';
                     messageDiv.style.display = 'none';
                     
-                    // Get fresh nonce
-                    var nonce = getNonce();
-                    
                     var formData = {
                         email: email
                     };
@@ -1154,15 +1136,12 @@ class SimpleMagicLogin {
                     <?php endif; ?>
                     
                     console.log('Magic Login: Sending request to', restUrl);
-                    console.log('Magic Login: Nonce', nonce ? 'present' : 'missing');
                     
                     fetch(restUrl, {
                         method: 'POST',
                         headers: {
-                            'Content-Type': 'application/json',
-                            'X-WP-Nonce': nonce
+                            'Content-Type': 'application/json'
                         },
-                        credentials: 'same-origin',
                         body: JSON.stringify(formData)
                     })
                     .then(function(response) {
