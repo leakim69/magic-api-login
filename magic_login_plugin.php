@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.5.1
+ * Version: 2.6.0
  * Author: Creative Chili
  */
 
@@ -88,6 +88,23 @@ class SimpleMagicLogin {
                     'required' => true,
                     'type' => 'integer',
                     'description' => 'WordPress user ID'
+                ]
+            ]
+        ]);
+
+        register_rest_route('magic-login/v1', '/request-new-link', [
+            'methods' => 'POST',
+            'callback' => [$this, 'api_request_new_link'],
+            'permission_callback' => '__return_true',
+            'args' => [
+                'email' => [
+                    'required' => true,
+                    'type' => 'string',
+                    'description' => 'User email address',
+                    'validate_callback' => function($param) {
+                        return is_email($param);
+                    },
+                    'sanitize_callback' => 'sanitize_email'
                 ]
             ]
         ]);
@@ -418,6 +435,175 @@ class SimpleMagicLogin {
         ], 200);
     }
 
+    public function api_request_new_link(WP_REST_Request $request) {
+        // Verify nonce for CSRF protection
+        $nonce = $request->get_header('X-WP-Nonce');
+        if (!$nonce || !wp_verify_nonce($nonce, 'wp_rest')) {
+            return new WP_REST_Response([
+                'success' => false,
+                'message' => 'Security check failed. Please refresh the page and try again.'
+            ], 403);
+        }
+        
+        // Ensure schema is current before inserting
+        $this->ensure_schema();
+        
+        $email = sanitize_email($request->get_param('email'));
+        
+        if (empty($email) || !is_email($email)) {
+            return new WP_REST_Response([
+                'success' => false,
+                'message' => 'Please provide a valid email address.'
+            ], 400);
+        }
+
+        // Get user by email
+        $user = get_user_by('email', $email);
+        
+        // For security, always return success message even if user doesn't exist
+        // This prevents email enumeration attacks
+        if (!$user) {
+            // Still return success to prevent user enumeration
+            return new WP_REST_Response([
+                'success' => true,
+                'message' => 'If an account exists with this email, a new login link has been sent.'
+            ], 200);
+        }
+
+        // Rate limiting - use a generic key to prevent enumeration
+        $rate_limit_key = 'sml_request_link_' . md5($email);
+        $limit = 3; // 3 requests
+        $window = 300; // per 5 minutes
+        
+        $data = get_transient($rate_limit_key);
+        if ($data === false) {
+            $data = ['count' => 0, 'time' => time()];
+        }
+        
+        // Reset if window expired
+        if (time() - $data['time'] > $window) {
+            $data = ['count' => 0, 'time' => time()];
+        }
+        
+        $data['count']++;
+        set_transient($rate_limit_key, $data, $window);
+        
+        if ($data['count'] > $limit) {
+            return new WP_REST_Response([
+                'success' => false,
+                'message' => 'Too many requests. Please try again later.'
+            ], 429);
+        }
+
+        // Apply user-specific rate limiting
+        if (!$this->check_rate_limit($user->ID)) {
+            return new WP_REST_Response([
+                'success' => false,
+                'message' => 'Too many requests. Please try again later.'
+            ], 429);
+        }
+
+        // Generate token
+        global $wpdb;
+        $token = bin2hex(random_bytes(32));
+        $token_hash = $this->hash_token($token);
+        
+        $settings = get_option($this->option_key, []);
+        $expiry_value = isset($settings['expiry_value']) ? (int)$settings['expiry_value'] : (isset($settings['expiry_days']) ? (int)$settings['expiry_days'] : 60);
+        $expiry_unit = isset($settings['expiry_unit']) ? $settings['expiry_unit'] : 'hours';
+        $expiry_value = max(1, $expiry_value);
+        switch (strtolower($expiry_unit)) {
+            case 'minutes':
+                $expiry_seconds = $expiry_value * 60;
+                break;
+            case 'hours':
+                $expiry_seconds = $expiry_value * 3600;
+                break;
+            default:
+                $expiry_seconds = $expiry_value * 24 * 3600; // days
+        }
+        $max_uses_setting = isset($settings['max_uses']) ? max(0, (int)$settings['max_uses']) : 0;
+        
+        // Capture IP and User Agent
+        $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+        $user_agent = isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 255) : '';
+        
+        // Get return URL setting
+        $return_url_setting = isset($settings['return_url']) && $settings['return_url'] !== '' ? $settings['return_url'] : home_url('/');
+        
+        // Insert with hashed token
+        $insert = $wpdb->insert($this->table, [
+            'user_id' => $user->ID,
+            'token_hash' => $token_hash,
+            'ip_address' => $ip_address,
+            'user_agent' => $user_agent,
+            'expires_at' => gmdate('Y-m-d H:i:s', time() + $expiry_seconds),
+            'use_count' => 0,
+            'max_uses' => $max_uses_setting
+        ]);
+
+        if (!$insert) {
+            error_log('[SML] Failed to create token for email request: ' . $wpdb->last_error);
+            return new WP_REST_Response([
+                'success' => false,
+                'message' => 'An error occurred. Please try again later.'
+            ], 500);
+        }
+
+        // Log the generation
+        $days_equivalent = max(1, (int) ceil($expiry_seconds / (24 * 3600)));
+        do_action('sml_token_generated', $user->ID, $days_equivalent, $ip_address);
+
+        // Build login URL
+        $login_url_params = [
+            'sml_action' => 'login',
+            'sml_token' => $token,
+            'sml_user' => $user->ID,
+            'sml_redirect' => $return_url_setting
+        ];
+        
+        $login_url = add_query_arg($login_url_params, home_url('/'));
+
+        // Send email
+        $site_name = get_bloginfo('name');
+        $site_url = home_url('/');
+        $subject = sprintf(__('Your New Login Link for %s', 'magic-api-login'), $site_name);
+        
+        $expiry_display = '';
+        if ($expiry_unit === 'minutes') {
+            $expiry_display = $expiry_value . ' ' . ($expiry_value === 1 ? 'minute' : 'minutes');
+        } elseif ($expiry_unit === 'hours') {
+            $expiry_display = $expiry_value . ' ' . ($expiry_value === 1 ? 'hour' : 'hours');
+        } else {
+            $expiry_display = $expiry_value . ' ' . ($expiry_value === 1 ? 'day' : 'days');
+        }
+        
+        $max_uses_display = $max_uses_setting > 0 ? sprintf(__('This link can be used up to %d time(s).', 'magic-api-login'), $max_uses_setting) : __('This link can be used multiple times.', 'magic-api-login');
+        
+        $message = sprintf(
+            __("Hello,\n\nYou requested a new login link for %s.\n\nClick the link below to log in:\n\n%s\n\nThis link will expire in %s. %s\n\nIf you didn't request this link, you can safely ignore this email.\n\nBest regards,\n%s", 'magic-api-login'),
+            $site_name,
+            $login_url,
+            $expiry_display,
+            $max_uses_display,
+            $site_name
+        );
+        
+        $headers = ['Content-Type: text/plain; charset=UTF-8'];
+        $sent = wp_mail($user->user_email, $subject, $message, $headers);
+        
+        if (!$sent) {
+            error_log('[SML] Failed to send email for new link request to: ' . $user->user_email);
+        }
+
+        do_action('sml_new_link_requested', $user->ID, $email, $sent);
+
+        return new WP_REST_Response([
+            'success' => true,
+            'message' => 'A new login link has been sent to your email address.'
+        ], 200);
+    }
+
     public function activate() {
         global $wpdb;
         $charset = $wpdb->get_charset_collate();
@@ -482,12 +668,20 @@ class SimpleMagicLogin {
 	/**
 	 * Output a modern, branded error page for login link issues.
 	 */
-	private static function render_login_error_page($title, $message) {
+	private static function render_login_error_page($title, $message, $show_request_form = false) {
 		header('Content-Type: text/html; charset=utf-8');
 		$home = esc_url(home_url('/'));
 		$title_esc = esc_html($title);
 		$message_esc = esc_html($message);
 		$site_name = esc_html(get_bloginfo('name'));
+		$rest_url = esc_url(rest_url('magic-login/v1/request-new-link'));
+		$nonce = wp_create_nonce('wp_rest');
+		
+		$form_html = '';
+		if ($show_request_form) {
+			$form_html = '<div class="request-form" style="margin-top:24px;padding-top:24px;border-top:1px solid #e2e8f0"><h2 style="font-size:18px;margin:0 0 12px">Request a New Login Link</h2><p style="margin:0 0 16px;color:var(--muted);font-size:14px">Enter your email address and we\'ll send you a new login link.</p><form id="request-link-form" style="display:flex;flex-direction:column;gap:12px"><input type="email" id="request-email" placeholder="your@email.com" required style="width:100%;padding:12px 16px;border:1px solid #cbd5e1;border-radius:12px;font-size:15px;background:#fff" /><button type="submit" id="request-submit" style="background:var(--primary);color:#fff;border:none;padding:12px 24px;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;transition:background 0.2s">Send New Link</button></form><div id="request-message" style="margin-top:12px;padding:12px;border-radius:8px;display:none"></div></div>';
+		}
+		
 		echo "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{$title_esc} – {$site_name}</title><style>
 			:root{--bg:#f8fafc;--card:#ffffff;--text:#0f172a;--muted:#475569;--primary:#4f46e5;--ring:rgba(99,102,241,.15)}
 			*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
@@ -499,7 +693,66 @@ class SimpleMagicLogin {
 			.actions{margin-top:12px}
 			.btn{display:inline-block;background:var(--text);color:#fff;text-decoration:none;padding:10px 16px;border-radius:12px}
 			.btn:hover{background:#1e293b}
-		</style></head><body><div class=\"container\"><div class=\"card\"><div class=\"icon\" aria-hidden=\"true\">⚠️</div><h1>{$title_esc}</h1><p>{$message_esc}</p><div class=\"actions\"><a class=\"btn\" href=\"{$home}\">Back to homepage</a></div></div></div></body></html>";
+			#request-link-form input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--ring)}
+			#request-submit:hover{background:#4338ca}
+			#request-submit:disabled{opacity:0.6;cursor:not-allowed}
+			.request-form h2{color:var(--text)}
+		</style></head><body><div class=\"container\"><div class=\"card\"><div class=\"icon\" aria-hidden=\"true\">⚠️</div><h1>{$title_esc}</h1><p>{$message_esc}</p><div class=\"actions\"><a class=\"btn\" href=\"{$home}\">Back to homepage</a></div>{$form_html}</div></div><script>
+		(function() {
+			var form = document.getElementById('request-link-form');
+			if (!form) return;
+			var emailInput = document.getElementById('request-email');
+			var submitBtn = document.getElementById('request-submit');
+			var messageDiv = document.getElementById('request-message');
+			
+			form.addEventListener('submit', function(e) {
+				e.preventDefault();
+				var email = emailInput.value.trim();
+				if (!email) return;
+				
+				submitBtn.disabled = true;
+				submitBtn.textContent = 'Sending...';
+				messageDiv.style.display = 'none';
+				
+				fetch('{$rest_url}', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'X-WP-Nonce': '{$nonce}'
+					},
+					body: JSON.stringify({email: email})
+				})
+				.then(function(response) { return response.json(); })
+				.then(function(data) {
+					submitBtn.disabled = false;
+					submitBtn.textContent = 'Send New Link';
+					messageDiv.style.display = 'block';
+					
+					if (data.success) {
+						messageDiv.style.background = '#d1fae5';
+						messageDiv.style.color = '#065f46';
+						messageDiv.style.border = '1px solid #86efac';
+						messageDiv.textContent = '✓ A new login link has been sent to your email address. Please check your inbox.';
+						emailInput.value = '';
+					} else {
+						messageDiv.style.background = '#fee2e2';
+						messageDiv.style.color = '#991b1b';
+						messageDiv.style.border = '1px solid #fca5a5';
+						messageDiv.textContent = data.message || 'An error occurred. Please try again later.';
+					}
+				})
+				.catch(function(error) {
+					submitBtn.disabled = false;
+					submitBtn.textContent = 'Send New Link';
+					messageDiv.style.display = 'block';
+					messageDiv.style.background = '#fee2e2';
+					messageDiv.style.color = '#991b1b';
+					messageDiv.style.border = '1px solid #fca5a5';
+					messageDiv.textContent = 'An error occurred. Please try again later.';
+				});
+			});
+		})();
+		</script></body></html>";
 	}
 
     public static function verify_and_login() {
@@ -532,7 +785,7 @@ class SimpleMagicLogin {
 
         // Enforce usage limits
         if ($row->max_uses > 0 && (int)$row->use_count >= (int)$row->max_uses) {
-            self::render_login_error_page('Link limit reached', 'This login link has reached its maximum allowed uses. Please request a new one.');
+            self::render_login_error_page('Link limit reached', 'This login link has reached its maximum allowed uses. Please request a new one.', true);
             exit;
         }
 
