@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.9.2
+ * Version: 2.10.0
  * Author: Creative Chili
  */
 
@@ -1596,20 +1596,108 @@ HTML;
 
     public function user_profile_revoke_section($user) {
         global $wpdb;
+        
+        // Check if user can edit this profile (admin editing another user)
+        $is_admin_editing = current_user_can('edit_user', $user->ID) && get_current_user_id() !== $user->ID;
+        
+        // Count regular active links
         $count = $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM {$this->table} WHERE user_id = %d AND expires_at > NOW()",
+            "SELECT COUNT(*) FROM {$this->table} WHERE user_id = %d AND expires_at > NOW() AND expires_at < '2099-01-01'",
             $user->ID
         ));
         
+        // Count permanent links (expires in 2099)
+        $permanent_count = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$this->table} WHERE user_id = %d AND expires_at >= '2099-01-01'",
+            $user->ID
+        ));
+        
+        // Get permanent links for display
+        $permanent_links = $wpdb->get_results($wpdb->prepare(
+            "SELECT id, created_at, use_count FROM {$this->table} WHERE user_id = %d AND expires_at >= '2099-01-01' ORDER BY created_at DESC",
+            $user->ID
+        ));
+        
+        // Check if a permanent link was just generated
+        $new_permanent_link = get_transient('sml_permanent_link_' . $user->ID);
+        if ($new_permanent_link) {
+            delete_transient('sml_permanent_link_' . $user->ID);
+        }
+        
         ?>
         <h2>Magic Login Links</h2>
+        
+        <?php if ($is_admin_editing): ?>
+        <table class="form-table">
+            <tr>
+                <th><label>Permanent Login Link</label></th>
+                <td>
+                    <p class="description">Generate a permanent login link that never expires. This is useful for sharing with trusted users or embedding in applications.</p>
+                    <?php wp_nonce_field('sml_generate_permanent_link_' . $user->ID, 'sml_permanent_link_nonce'); ?>
+                    <button type="submit" name="sml_generate_permanent_link" class="button button-primary" style="margin-top: 8px;">
+                        Generate Permanent Link
+                    </button>
+                    
+                    <?php if ($new_permanent_link): ?>
+                        <div style="margin-top: 16px; padding: 12px; background: #f0f6ff; border: 1px solid #b3d9ff; border-radius: 4px;">
+                            <p style="margin: 0 0 8px; font-weight: 600; color: #0066cc;">✓ Permanent link generated:</p>
+                            <input type="text" readonly value="<?php echo esc_attr($new_permanent_link); ?>" 
+                                   style="width: 100%; padding: 8px; font-family: monospace; font-size: 12px; background: #fff; border: 1px solid #ccc; border-radius: 4px;"
+                                   onclick="this.select();" />
+                            <p style="margin: 8px 0 0; font-size: 12px; color: #666;">
+                                ⚠️ <strong>Important:</strong> Copy this link now. It will not be shown again for security reasons.
+                            </p>
+                        </div>
+                    <?php endif; ?>
+                </td>
+            </tr>
+        </table>
+        <?php endif; ?>
+        
+        <?php if ($permanent_count > 0): ?>
+        <table class="form-table">
+            <tr>
+                <th><label>Permanent Links</label></th>
+                <td>
+                    <p>This user has <strong><?php echo (int)$permanent_count; ?></strong> permanent login link(s) that never expire.</p>
+                    <?php if ($is_admin_editing && !empty($permanent_links)): ?>
+                        <table class="widefat" style="margin-top: 12px;">
+                            <thead>
+                                <tr>
+                                    <th>Created</th>
+                                    <th>Times Used</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($permanent_links as $link): ?>
+                                <tr>
+                                    <td><?php echo esc_html(date_i18n(get_option('date_format') . ' ' . get_option('time_format'), strtotime($link->created_at))); ?></td>
+                                    <td><?php echo (int)$link->use_count; ?></td>
+                                    <td>
+                                        <button type="submit" name="sml_revoke_permanent" value="<?php echo (int)$link->id; ?>" 
+                                                class="button button-small" 
+                                                onclick="return confirm('Are you sure you want to revoke this permanent link?');">
+                                            Revoke
+                                        </button>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    <?php endif; ?>
+                </td>
+            </tr>
+        </table>
+        <?php endif; ?>
+        
         <table class="form-table">
             <tr>
                 <th><label>Active Links</label></th>
                 <td>
-                    <p>You currently have <strong><?php echo (int)$count; ?></strong> active magic login link(s).</p>
+                    <p>This user currently has <strong><?php echo (int)$count; ?></strong> active temporary magic login link(s).</p>
                     <?php if ($count > 0): ?>
-                        <p class="description">If you believe your magic links have been compromised, you can revoke all of them.</p>
+                        <p class="description">If you believe magic links have been compromised, you can revoke all of them.</p>
                     <?php endif; ?>
                 </td>
             </tr>
@@ -1620,8 +1708,8 @@ HTML;
                     <th></th>
                     <td>
                         <button type="submit" name="sml_revoke_all" class="button button-secondary" 
-                                onclick="return confirm('Are you sure you want to revoke all your magic login links? This cannot be undone.');">
-                            Revoke All My Magic Links
+                                onclick="return confirm('Are you sure you want to revoke all temporary magic login links? This cannot be undone.');">
+                            Revoke All Temporary Links
                         </button>
                     </td>
                 </tr>
@@ -1630,24 +1718,132 @@ HTML;
     }
 
     public function handle_user_revoke($user_id) {
-        if (!isset($_POST['sml_revoke_all'])) {
-            return;
-        }
-        
         // Security check
         if (!current_user_can('edit_user', $user_id)) {
             return;
         }
         
         global $wpdb;
-        $deleted = $wpdb->delete($this->table, ['user_id' => $user_id], ['%d']);
         
-        if ($deleted !== false) {
-            add_action('admin_notices', function() use ($deleted) {
-                echo '<div class="updated"><p>Successfully revoked ' . (int)$deleted . ' magic login link(s).</p></div>';
-            });
-            do_action('sml_user_tokens_revoked', $user_id, $deleted);
+        // Handle permanent link generation
+        if (isset($_POST['sml_generate_permanent_link'])) {
+            if (!isset($_POST['sml_permanent_link_nonce']) || !wp_verify_nonce($_POST['sml_permanent_link_nonce'], 'sml_generate_permanent_link_' . $user_id)) {
+                add_action('admin_notices', function() {
+                    echo '<div class="error"><p>Security check failed. Please try again.</p></div>';
+                });
+                return;
+            }
+            
+            $result = $this->generate_permanent_link($user_id);
+            if ($result && isset($result['login_url'])) {
+                // Store the generated link in a transient to display it
+                set_transient('sml_permanent_link_' . $user_id, $result['login_url'], 300); // 5 minutes
+                add_action('admin_notices', function() {
+                    echo '<div class="updated"><p>✓ Permanent login link generated successfully. Copy it below before leaving this page.</p></div>';
+                });
+            } else {
+                add_action('admin_notices', function() {
+                    echo '<div class="error"><p>Failed to generate permanent link. Please try again.</p></div>';
+                });
+            }
+            return;
         }
+        
+        // Handle revoke single permanent link
+        if (isset($_POST['sml_revoke_permanent'])) {
+            $link_id = (int)$_POST['sml_revoke_permanent'];
+            // Verify the link belongs to this user and is permanent
+            $deleted = $wpdb->query($wpdb->prepare(
+                "DELETE FROM {$this->table} WHERE id = %d AND user_id = %d AND expires_at >= '2099-01-01'",
+                $link_id,
+                $user_id
+            ));
+            
+            if ($deleted !== false && $deleted > 0) {
+                add_action('admin_notices', function() {
+                    echo '<div class="updated"><p>✓ Permanent link revoked successfully.</p></div>';
+                });
+                do_action('sml_permanent_token_revoked', $user_id, $link_id);
+            }
+            return;
+        }
+        
+        // Handle revoke all temporary links
+        if (isset($_POST['sml_revoke_all'])) {
+            // Only revoke temporary links (not permanent ones)
+            $deleted = $wpdb->query($wpdb->prepare(
+                "DELETE FROM {$this->table} WHERE user_id = %d AND expires_at < '2099-01-01'",
+                $user_id
+            ));
+            
+            if ($deleted !== false && $deleted > 0) {
+                add_action('admin_notices', function() use ($deleted) {
+                    echo '<div class="updated"><p>Successfully revoked ' . (int)$deleted . ' temporary magic login link(s).</p></div>';
+                });
+                do_action('sml_user_tokens_revoked', $user_id, $deleted);
+            }
+        }
+    }
+    
+    /**
+     * Generate a permanent login link for a user (never expires)
+     */
+    private function generate_permanent_link($user_id) {
+        $user = get_user_by('ID', $user_id);
+        if (!$user) {
+            return false;
+        }
+        
+        global $wpdb;
+        $token = bin2hex(random_bytes(32));
+        $token_hash = $this->hash_token($token);
+        
+        // Set expiry to far future (year 2099)
+        $permanent_expiry = '2099-12-31 23:59:59';
+        
+        // Capture IP and User Agent
+        $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+        $user_agent = isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 255) : '';
+        
+        // Get settings for redirect URL
+        $settings = get_option($this->option_key, []);
+        $redirect_url = isset($settings['return_url']) && $settings['return_url'] !== '' ? $settings['return_url'] : home_url('/');
+        
+        // Insert with permanent expiry
+        $insert = $wpdb->insert($this->table, [
+            'user_id' => $user->ID,
+            'token_hash' => $token_hash,
+            'ip_address' => $ip_address,
+            'user_agent' => $user_agent,
+            'expires_at' => $permanent_expiry,
+            'use_count' => 0,
+            'max_uses' => 0 // No limit on permanent links
+        ]);
+        
+        if (!$insert) {
+            error_log('[SML] Failed to create permanent token: ' . $wpdb->last_error);
+            return false;
+        }
+        
+        // Log the generation
+        do_action('sml_permanent_token_generated', $user->ID, $ip_address);
+        
+        // Build login URL
+        $login_url_params = [
+            'sml_action' => 'login',
+            'sml_token' => $token,
+            'sml_user' => $user->ID,
+            'sml_redirect' => esc_url_raw($redirect_url)
+        ];
+        
+        $login_url = add_query_arg($login_url_params, home_url('/'));
+        
+        return [
+            'success' => true,
+            'user_id' => $user->ID,
+            'token' => $token,
+            'login_url' => $login_url
+        ];
     }
 
     public function render_settings_page() {
