@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.9.1
+ * Version: 2.9.2
  * Author: Creative Chili
  */
 
@@ -1006,8 +1006,8 @@ HTML;
 		$title_esc = esc_html($title);
 		$message_esc = esc_html($message);
 		$site_name = esc_html(get_bloginfo('name'));
-		$rest_url = esc_url(rest_url('magic-login/v1/request-new-link'));
-		$nonce = wp_create_nonce('wp_rest');
+		$ajax_url = admin_url('admin-ajax.php');
+		$nonce = wp_create_nonce('sml_login_form_nonce');
 		
 		$form_html = '';
 		if ($show_request_form) {
@@ -1046,15 +1046,17 @@ HTML;
 				submitBtn.textContent = 'Sending...';
 				messageDiv.style.display = 'none';
 				
-				fetch('{$rest_url}', {
+				var formData = new FormData();
+				formData.append('action', 'sml_request_login_link');
+				formData.append('email', email);
+				formData.append('nonce', '{$nonce}');
+				
+				fetch('{$ajax_url}', {
 					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						'X-WP-Nonce': '{$nonce}'
-					},
-					body: JSON.stringify({email: email})
+					body: formData,
+					credentials: 'same-origin'
 				})
-				.then(function(response) { return response.json(); })
+				.then(function(r) { return r.json(); })
 				.then(function(data) {
 					submitBtn.disabled = false;
 					submitBtn.textContent = 'Send New Link';
@@ -1070,10 +1072,11 @@ HTML;
 						messageDiv.style.background = '#fee2e2';
 						messageDiv.style.color = '#991b1b';
 						messageDiv.style.border = '1px solid #fca5a5';
-						messageDiv.textContent = data.message || 'An error occurred. Please try again later.';
+						messageDiv.textContent = data.data && data.data.message ? data.data.message : 'An error occurred. Please try again later.';
 					}
 				})
 				.catch(function(error) {
+					console.error('SML Error:', error);
 					submitBtn.disabled = false;
 					submitBtn.textContent = 'Send New Link';
 					messageDiv.style.display = 'block';
