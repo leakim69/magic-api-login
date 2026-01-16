@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.10.1
+ * Version: 2.10.2
  * Author: Creative Chili
  */
 
@@ -345,11 +345,6 @@ HTML;
         }
         $this->schema_checked = true;
 
-        $current_version = (int) get_option($this->schema_version_option, 0);
-        if ($current_version >= self::SCHEMA_VERSION) {
-            return;
-        }
-
         global $wpdb;
         $table = $this->table;
 
@@ -365,9 +360,13 @@ HTML;
             return;
         }
 
-        // Migrate old columns to new schema
+        // Always check for missing columns, even if version says it's up to date
+        // This handles cases where migration was interrupted or failed
         $columns = $wpdb->get_col("SHOW COLUMNS FROM {$table}", 0);
         $altered = false;
+        
+        $current_version = (int) get_option($this->schema_version_option, 0);
+        $needs_migration = $current_version < self::SCHEMA_VERSION;
 
         // Handle old 'token' column from v1.x - drop it if it exists
         if (in_array('token', $columns, true)) {
@@ -408,13 +407,25 @@ HTML;
 
         // Add helpful indexes if missing (suppress errors if they already exist)
         if ($altered) {
-            $wpdb->query("ALTER TABLE {$table} ADD INDEX user_idx (user_id)");
-            $wpdb->query("ALTER TABLE {$table} ADD INDEX expires_idx (expires_at)");
-            $wpdb->query("ALTER TABLE {$table} ADD INDEX token_hash_idx (token_hash)");
+            // Only add indexes if they don't exist to avoid errors
+            $indexes = $wpdb->get_col("SHOW INDEXES FROM {$table}", 2);
+            if (!in_array('user_idx', $indexes)) {
+                $wpdb->query("ALTER TABLE {$table} ADD INDEX user_idx (user_id)");
+            }
+            if (!in_array('expires_idx', $indexes)) {
+                $wpdb->query("ALTER TABLE {$table} ADD INDEX expires_idx (expires_at)");
+            }
+            if (!in_array('token_hash_idx', $indexes)) {
+                $wpdb->query("ALTER TABLE {$table} ADD INDEX token_hash_idx (token_hash)");
+            }
             error_log('[SML] Schema migration: Added indexes');
         }
 
-        update_option($this->schema_version_option, self::SCHEMA_VERSION, false);
+        // Update version if migration was needed or columns were added
+        if ($needs_migration || $altered) {
+            update_option($this->schema_version_option, self::SCHEMA_VERSION, false);
+            error_log('[SML] Schema migration: Updated version to ' . self::SCHEMA_VERSION);
+        }
     }
 
     private function check_rate_limit($user_id) {
@@ -940,26 +951,39 @@ HTML;
         global $wpdb;
         $charset = $wpdb->get_charset_collate();
         
-        // Updated schema with token_hash, user_agent, and better indexes
-        // dbDelta requires specific formatting: two spaces between field name and definition
-        $sql = "CREATE TABLE IF NOT EXISTS {$this->table} (
-            id  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            user_id  BIGINT(20) UNSIGNED NOT NULL,
-            token_hash  CHAR(64) NOT NULL,
-            ip_address  VARCHAR(45),
-            user_agent  VARCHAR(255),
-            created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            expires_at  DATETIME NOT NULL,
-            use_count  INT NOT NULL DEFAULT 0,
-            max_uses  INT NOT NULL DEFAULT 0,
-            PRIMARY KEY  (id),
-            UNIQUE KEY token_hash (token_hash),
-            KEY user_idx (user_id),
-            KEY expires_idx (expires_at)
-        ) $charset;";
+        // Check if table already exists
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$this->table}'") === $this->table;
         
-        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-        dbDelta($sql);
+        if (!$table_exists) {
+            // dbDelta requires specific formatting: two spaces between field name and definition
+            // Do NOT use CREATE TABLE IF NOT EXISTS - dbDelta handles this
+            $sql = "CREATE TABLE {$this->table} (
+                id  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                user_id  BIGINT(20) UNSIGNED NOT NULL,
+                token_hash  CHAR(64) NOT NULL,
+                ip_address  VARCHAR(45),
+                user_agent  VARCHAR(255),
+                created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at  DATETIME NOT NULL,
+                use_count  INT NOT NULL DEFAULT 0,
+                max_uses  INT NOT NULL DEFAULT 0,
+                PRIMARY KEY  (id),
+                UNIQUE KEY token_hash (token_hash),
+                KEY user_idx (user_id),
+                KEY expires_idx (expires_at)
+            ) $charset;";
+            
+            require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+            dbDelta($sql);
+            
+            // Verify table was created
+            $table_created = $wpdb->get_var("SHOW TABLES LIKE '{$this->table}'") === $this->table;
+            if (!$table_created) {
+                error_log('[SML] Error: Failed to create table ' . $this->table);
+                // Fallback: try direct SQL
+                $wpdb->query($sql);
+            }
+        }
         
         // Schedule daily cleanup
         if (!wp_next_scheduled('sml_purge_tokens')) {
