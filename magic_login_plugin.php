@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.10.2
+ * Version: 2.10.3
  * Author: Creative Chili
  */
 
@@ -951,8 +951,11 @@ HTML;
         global $wpdb;
         $charset = $wpdb->get_charset_collate();
         
-        // Check if table already exists
-        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$this->table}'") === $this->table;
+        // Check if table already exists using information_schema (works with any prefix)
+        $table_exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s",
+            $this->table
+        ));
         
         if (!$table_exists) {
             // dbDelta requires specific formatting: two spaces between field name and definition
@@ -976,8 +979,11 @@ HTML;
             require_once ABSPATH . 'wp-admin/includes/upgrade.php';
             dbDelta($sql);
             
-            // Verify table was created
-            $table_created = $wpdb->get_var("SHOW TABLES LIKE '{$this->table}'") === $this->table;
+            // Verify table was created using information_schema (works with any prefix)
+            $table_created = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s",
+                $this->table
+            ));
             if (!$table_created) {
                 error_log('[SML] Error: Failed to create table ' . $this->table);
                 // Fallback: try direct SQL
