@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Magic API Login
  * Description: Passwordless authentication via reusable magic links with API support - Improved UI Edition
- * Version: 2.10.0
+ * Version: 2.10.1
  * Author: Creative Chili
  */
 
@@ -941,20 +941,21 @@ HTML;
         $charset = $wpdb->get_charset_collate();
         
         // Updated schema with token_hash, user_agent, and better indexes
+        // dbDelta requires specific formatting: two spaces between field name and definition
         $sql = "CREATE TABLE IF NOT EXISTS {$this->table} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            user_id BIGINT(20) UNSIGNED NOT NULL,
-            token_hash CHAR(64) NOT NULL UNIQUE,
-            ip_address VARCHAR(45),
-            user_agent VARCHAR(255),
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            expires_at DATETIME NOT NULL,
-            use_count INT NOT NULL DEFAULT 0,
-            max_uses INT NOT NULL DEFAULT 0,
-            PRIMARY KEY (id),
+            id  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            user_id  BIGINT(20) UNSIGNED NOT NULL,
+            token_hash  CHAR(64) NOT NULL,
+            ip_address  VARCHAR(45),
+            user_agent  VARCHAR(255),
+            created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at  DATETIME NOT NULL,
+            use_count  INT NOT NULL DEFAULT 0,
+            max_uses  INT NOT NULL DEFAULT 0,
+            PRIMARY KEY  (id),
+            UNIQUE KEY token_hash (token_hash),
             KEY user_idx (user_id),
-            KEY expires_idx (expires_at),
-            KEY token_hash_idx (token_hash)
+            KEY expires_idx (expires_at)
         ) $charset;";
         
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
